@@ -101,4 +101,5 @@
     return [lng, Math.atan(Math.sinh(yy)) * 180 / Math.PI];
   }
   root.MVT = { decode, toLngLat };
+  (root.AM = root.AM || {}).MVT = root.MVT;
 })(typeof window !== 'undefined' ? window : globalThis);
