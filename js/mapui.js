@@ -52,6 +52,9 @@
     return c;
   }
 
+  // the map object exists before its 'load' event (M.map is set in init): markers and camera moves may use it already —
+  // a place opened while a slow phone network is still loading the style must not break the panel
+  const mp = () => M.map || (AM.A && AM.A.map) || null;
   const M = AM.M = {
     dotImg() { if (!M._dot) { const [c, x] = canvas(14, 14); x.beginPath(); x.arc(7, 7, 4.6, 0, Math.PI * 2); x.fillStyle = '#8d939a'; x.fill(); x.lineWidth = 1.6; x.strokeStyle = '#fff'; x.stroke(); M._dot = x.getImageData(0, 0, c.width, c.height); } return M._dot; },
     map: null, st: { night: false, base: 'map', labels: true, b3d: false, transit: false, bike: false },
@@ -69,6 +72,7 @@
     },
     init(map) {
       M.map = map;
+      if (M.pendPin) { M.showPin(M.pendPin); M.pendPin = null; }
       M.images(map);
       const b = AM.S.beforeId;
       const src = id => map.getSource(id) || map.addSource(id, { type: 'geojson', data: FC() });
@@ -158,13 +162,14 @@
     // ---------- HTML markers ----------
     pin: null,
     showPin(ll) {
+      if (!M.map) { M.pendPin = ll || null; return; }               // map still loading: placed by init()
       if (!ll) { if (M.pin) M.pin.remove(); M.pin = null; return; }
       if (!M.pin) {
         const el = document.createElement('div'); el.className = 'mk-pin';
         el.innerHTML = '<svg viewBox="0 0 28 44"><path d="M14 42S1.5 25 1.5 14a12.5 12.5 0 0 1 25 0C26.5 25 14 42 14 42z" fill="#ea4335" stroke="#a50e0e" stroke-width="1.4"/><circle cx="14" cy="14" r="5" fill="#7a0b0b"/></svg>';
         M.pin = new maplibregl.Marker({ element: el, anchor: 'bottom' });
       }
-      M.pin.setLngLat(ll).addTo(M.map);
+      if (mp()) M.pin.setLngLat(ll).addTo(mp());
     },
     wpMarkers: [],
     showWps(pts, onDrag) {
@@ -176,7 +181,7 @@
         if (i === n - 1) { el = document.createElement('div'); el.className = 'mk-pin'; el.innerHTML = '<svg viewBox="0 0 28 44"><path d="M14 42S1.5 25 1.5 14a12.5 12.5 0 0 1 25 0C26.5 25 14 42 14 42z" fill="#ea4335" stroke="#a50e0e" stroke-width="1.4"/><circle cx="14" cy="14" r="5" fill="#7a0b0b"/></svg>'; }
         else { el = document.createElement('div'); el.className = 'mk-wp' + (i > 0 ? ' mid' : ''); if (i > 0) el.textContent = i; }
         el.title = p.name || '';
-        const mk = new maplibregl.Marker({ element: el, anchor: i === n - 1 ? 'bottom' : 'center', draggable: true }).setLngLat([p.lng, p.lat]).addTo(M.map);
+        const mk = new maplibregl.Marker({ element: el, anchor: i === n - 1 ? 'bottom' : 'center', draggable: true }).setLngLat([p.lng, p.lat]).addTo(mp());
         mk.on('dragend', () => { const ll = mk.getLngLat(); onDrag(i, [ll.lng, ll.lat]); });
         M.wpMarkers.push(mk);
       });
@@ -201,7 +206,7 @@
         el.className = 'mk-tag' + (i === sel ? ' on' : '');
         el.innerHTML = U.esc(U.dur(r.time * (r.fac || 1))) + (r.toll ? '<small>tol</small>' : '');
         el.onclick = e => { e.stopPropagation(); onPick(i); };
-        M.tagMarkers.push(new maplibregl.Marker({ element: el, anchor: 'bottom', offset: [0, -6] }).setLngLat(at).addTo(M.map));
+        M.tagMarkers.push(new maplibregl.Marker({ element: el, anchor: 'bottom', offset: [0, -6] }).setLngLat(at).addTo(mp()));
       });
     },
     clearRoute() { M.setRoutes([], 0); M.setSpbu([]); M.setAlong([]); M.setTrav(null); M.showWps([], () => { }); M.showTags([], 0); },
@@ -211,7 +216,7 @@
       if (!M.me) {
         const el = M.meEl = document.createElement('div'); el.className = 'mk-me';
         el.innerHTML = '<div class="cone"></div><div class="dot"></div><svg class="arw" viewBox="0 0 44 44"><circle cx="22" cy="22" r="20" fill="#fff" opacity=".96"/><path d="M22 7 33 34 22 28 11 34z" fill="#1a73e8" stroke="#1557b0" stroke-width="1.2" stroke-linejoin="round"/></svg>';
-        M.me = new maplibregl.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' }).setLngLat(ll).addTo(M.map);
+        M.me = new maplibregl.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' }).setLngLat(ll).addTo(mp());
       }
       M.me.setLngLat(ll); M._ll = ll;
       M.meEl.classList.toggle('nav', !!o.nav);
@@ -239,14 +244,16 @@
     fit(bb, o = {}) {
       if (!bb) return;
       if (AM.A && AM.A.unfollow && !AM.N.on) AM.A.unfollow();
-      const map = M.map, p = M.pad();
+      if (!M.map) { M.pendCam = () => M.fit(bb, o); return; }        // map not created / loaded yet: run it after init
+      const map = mp(), p = M.pad();
       const w = map.getContainer().clientWidth - p.left - p.right, h = map.getContainer().clientHeight - p.top - p.bottom;
       if (w < 80 || h < 80) { map.easeTo({ center: [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2], zoom: Math.min(o.maxZoom || 15, map.getZoom()) }); return; }
       map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: p, maxZoom: o.maxZoom || 16, duration: U.reduced() ? 0 : (o.duration != null ? o.duration : 700), bearing: o.keepBearing ? map.getBearing() : 0, pitch: o.pitch != null ? o.pitch : (map.getPitch() > 40 && !AM.N.on ? 0 : map.getPitch()) });
     },
     fly(ll, z, o = {}) {
       if (!o.keep && AM.A && AM.A.unfollow && !AM.N.on) AM.A.unfollow();
-      const map = M.map, p = M.pad();
+      if (!M.map) { M.pendCam = () => M.fly(ll, z, o); return; }
+      const map = mp(), p = M.pad();
       const off = [(p.left - p.right) / 2, (p.top - p.bottom) / 2];
       const far = map.getBounds && !map.getBounds().contains(ll);
       const opt = { center: ll, zoom: z != null ? z : Math.max(map.getZoom(), 15), offset: off, duration: U.reduced() ? 0 : 900, essential: true };

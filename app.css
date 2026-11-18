@@ -129,6 +129,18 @@ body.pclosed #panel { transform: translateX(-100%); }
 .res .rd span { display: block; color: var(--mut); font-size: 13px; }
 .res .rr { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .res .rr .ib { width: 36px; height: 36px; border: 1px solid var(--line); color: var(--acc); }
+/* not on open map data: look on Google Maps, paste the shared link back */
+.gfb { margin: 10px 16px 14px; padding: 12px 14px; border-radius: 12px; background: var(--bg2); font-size: 13px; color: var(--mut); }
+.gfb p { margin: 0 0 10px; line-height: 1.45; }
+.gfb b { color: var(--fg); font-weight: 600; }
+.gfb .gb { display: flex; gap: 8px; flex-wrap: wrap; }
+.gfb.sm { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; }
+.gfb.sm > span { flex: 1; min-width: 90px; }
+.rhint { padding: 10px 18px 6px; font-size: 12.5px; color: var(--mut); border-bottom: 1px solid var(--line); }
+.res .rd b .mi { display: inline-flex; vertical-align: -2px; margin-right: 5px; color: var(--acc); }
+.res .rd b .mi .ic { width: 15px; height: 15px; }
+.sg.gact .si { background: var(--sel); color: var(--acc); }
+.sg.gact .st b { color: var(--acc); }
 .badge { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border-radius: 10px; font-size: 11.5px; font-weight: 500; background: var(--hover); color: var(--mut); white-space: nowrap; }
 .badge.g { background: var(--okbg); color: var(--ok); } .badge.y { background: var(--warnbg); color: var(--warn); } .badge.r { background: var(--badbg); color: var(--bad); } .badge.b { background: var(--sel); color: var(--acc); }
 .brand { width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; flex: none; box-shadow: 0 0 0 2px var(--bg); letter-spacing: -.3px; }

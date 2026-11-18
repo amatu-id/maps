@@ -166,13 +166,26 @@
         if (!items.length) { b.hidden = true; return; }
         b.hidden = false;
         b.innerHTML = items.map((it, i) => it.head ? '<div class="sg-h">' + esc(it.head) + '</div>' :
-          '<div class="sg' + (i === at ? ' on' : '') + '" data-i="' + i + '"><span class="si">' + ic(it.ic || 'pin') + '</span><span class="st"><b>' + esc(it.name) + '</b>' + (it.addr ? '<span>' + esc(it.addr) + '</span>' : '') + '</span>' + (it.dist ? '<span class="sd">' + esc(it.dist) + '</span>' : '') + '</div>').join('');
+          '<div class="sg' + (i === at ? ' on' : '') + (it.act ? ' gact' : '') + '" data-i="' + i + '"><span class="si">' + ic(it.ic || 'pin') + '</span><span class="st"><b>' + esc(it.name) + '</b>' + (it.addr ? '<span>' + esc(it.addr) + '</span>' : '') + '</span>' + (it.dist ? '<span class="sd">' + esc(it.dist) + '</span>' : '') + '</div>').join('');
         b.querySelectorAll('.sg').forEach(el => {
           el.onmousedown = e => e.preventDefault();
           el.onclick = () => pick(items[+el.dataset.i]);
         });
       };
-      const pick = it => { if (!it || it.head) return; hide(); o.onPick(it); };
+      const pick = it => {
+        if (!it || it.head) return;
+        hide();
+        if (it.act === 'google') { window.open(AM.L.googleSearch(it.q), '_blank', 'noopener'); return; }
+        if (it.linkText) {                                       // a pasted Google Maps / Apple Maps / … link
+          if (o.onLink) return o.onLink(it.linkText);
+          AM.L.resolve(it.linkText).then(r => {
+            if (r.place) { D.addPlace(r.place); o.onPick(r.place); }
+            else if (r.q) { input.value = r.q; input.focus(); run(); }
+          }).catch(e => U.toast(e.message, { ms: 5000 }));
+          return;
+        }
+        o.onPick(it);
+      };
       const base = () => {
         const out = [], q = input.value.trim().toLowerCase();
         const st = A().st;
@@ -182,16 +195,24 @@
         const sv = D.saved.items.filter(it => q && (it.name.toLowerCase().includes(q) || (it.addr || '').toLowerCase().includes(q))).slice(0, 3)
           .map(it => ({ name: it.name, addr: it.addr, ic: 'bookmark', lng: it.lng, lat: it.lat, osm: it.osm, cat: it.cat }));
         out.push(...sv);
-        const rc = D.recent().filter(r => !q || (r.name || r.q || '').toLowerCase().includes(q)).slice(0, q ? 3 : 6)
+        if (q) out.push(...D.places().filter(it => it.name.toLowerCase().includes(q) && !sv.some(x => x.name === it.name && Math.abs(x.lng - it.lng) < 2e-4)).slice(0, 3)
+          .map(it => ({ name: it.name, addr: it.addr || 'Ditambahkan dari link ' + AM.L.srcName((it.link || {}).src), ic: 'link', lng: it.lng, lat: it.lat, cat: it.cat, link: it.link, pid: it.id })));
+        const dupe = r => !r.q && out.some(x => x.name === r.name && Math.abs(x.lng - r.lng) < 4e-4 && Math.abs(x.lat - r.lat) < 4e-4);
+        const rc = D.recent().filter(r => (!q || (r.name || r.q || '').toLowerCase().includes(q)) && !dupe(r)).slice(0, q ? 3 : 6)
           .map(r => r.q ? { name: r.q, ic: 'history', q: r.q } : { name: r.name, addr: r.addr, ic: 'history', lng: r.lng, lat: r.lat, osm: r.osm, cat: r.cat, ov: r.ov });
         out.push(...rc);
-        return out;
+        return out.map(x => Object.assign(x, { loc: true }));
       };
       const run = U.debounce(async () => {
         if (document.activeElement !== input) return;              // a search already ran / the field was left
         const q = input.value.trim(), my = ++req;
         const local = base(); at = -1;
         const ref = A().center();
+        const lk = AM.L.isLink(q) ? AM.L.find(q) : null;
+        if (lk) {                                                // a pasted map link: one row that opens it
+          items = [{ linkText: q, name: lk.pre || 'Buka tempat dari link', addr: lk.url.replace(/^https?:\/\/(www\.)?/, '').slice(0, 60), ic: 'link' }];
+          at = 0; draw(); return;
+        }
         const c = G.parse(q, ref);
         if (c) local.unshift({ name: G.fmtLL(c, 6), addr: 'Koordinat', ic: 'pin', lng: c[0], lat: c[1], coord: true });
         items = local; draw();
@@ -202,6 +223,10 @@
           if (my !== req) return;
           const from = u || ref, sel = at >= 0 && items[at] ? items[at] : null;
           items = local.concat(res.filter(r => !local.some(l => l.name === r.name && Math.abs(l.lng - r.lng) < 2e-4)).map(r => Object.assign(r, { dist: U.dist(G.dist(from, [r.lng, r.lat])) })));
+          // nothing matches every word: the place may only be on Google Maps — one row to look there (then share the link back)
+          const good = r => !r.head && !r.act && (r.score >= 0.74 || r.mine || (r.loc && r.lng != null && !r.gps));
+          if (q.length >= 3 && !items.some(good))
+            items.push({ act: 'google', q, name: 'Cari “' + q + '” di Google Maps', addr: 'Ketemu? Bagikan → Salin link, lalu tempel di kolom ini', ic: 'search' });
           at = sel ? items.indexOf(sel) : -1;
           draw();
         };
@@ -232,6 +257,7 @@
   };
 
   // ============ helpers ============
+  const named = p => !!(p && p.name) && !p.coord && !/^(Titik di peta|Pin dijatuhkan|Titik koordinat|Lokasi Anda)$/.test(p.name);
   const brandBadge = p => { const b = P.brand(p.b); return '<span class="brand" style="background:' + b.c + ';color:' + b.t + '">' + esc(b.s) + '</span>'; };
   const sideTag = s => '<span class="side ' + (s > 0 ? 'L' : 'R') + '">' + (s > 0 ? 'Kiri' : 'Kanan') + '</span>';
   const fac = (mode, when) => R.factor(mode, when || new Date(), D.cfg.traffic);
@@ -248,16 +274,31 @@
     snap: 'half',
     html(d) {
       let body;
-      if (d.loading && !(d.items && d.items.length)) body = '<div class="loading"><span class="spin"></span>Mencari ' + esc(d.title) + '…</div>';
-      else if (d.err) body = '<div class="empty">' + esc(d.err) + '</div>';
-      else if (!d.items.length) body = '<div class="empty">Tidak ada hasil untuk “' + esc(d.title) + '” di area ini.<br><small>Coba geser/perkecil peta lalu cari lagi.</small></div>';
-      else body = d.items.map((r, i) => {
+      const row = (r, i) => {
         const st = r.oh ? Q.ohStatus(r.oh) : null;
-        return '<div class="res" data-i="' + i + '"><div class="rd"><b>' + esc(r.name || r.cat) + '</b><span>' + esc([r.cat, r.dist].filter(Boolean).join(' · ')) + '</span>' +
+        return '<div class="res" data-i="' + i + '"><div class="rd"><b>' + (r.mine === 'link' ? '<span class="mi">' + ic('link') + '</span>' : '') + esc(r.name || r.cat) + '</b><span>' + esc([r.cat, r.dist].filter(Boolean).join(' · ')) + '</span>' +
           (r.addr ? '<span>' + esc(r.addr) + '</span>' : '') + (st ? '<span class="' + (st.open ? 'ok' : 'bad') + '">' + esc(st.text) + '</span>' : '') +
           (r.spbu ? '<span>' + P.tags(r.spbu).map(t => '<span class="badge">' + esc(t) + '</span>').join(' ') + '</span>' : '') + '</div>' +
           '<div class="rr"><button class="ib" data-a="dir" data-i="' + i + '" title="Rute ke sini">' + ic('dir') + '</button></div></div>';
-      }).join('') + (d.loading ? '<div class="loading sm"><span class="spin"></span>Mencari tempat usaha di sekitar…</div>' : '');
+      };
+      // a typed search that open map data doesn't know: look on Google Maps, share the link back here
+      const gfb = full => '<div class="gfb' + (full ? '' : ' sm') + '">' + (full ? '<p>Tempat usaha baru sering hanya terdaftar di Google Maps. Cari di sana, ketuk <b>Bagikan → Salin link</b>, lalu tempel di sini — tempatnya terbuka di Amatu Maps (rute, navigasi) dan diingat untuk pencarian berikutnya.</p>' : '<span>Tidak ketemu?</span>') +
+        '<div class="gb"><a class="btn sm" href="' + esc(AM.L.googleSearch(d.q)) + '" target="_blank" rel="noopener">' + ic('search') + 'Cari di Google Maps</a><button class="btn sm pri" data-a="paste">' + ic('link') + 'Tempel link</button></div></div>';
+      const strong = r => !d.q || r.score >= 0.74 || !!r.mine;
+      if (d.loading && !(d.items && d.items.length)) body = '<div class="loading"><span class="spin"></span>' + (d.link ? 'Membuka link peta…' : 'Mencari ' + esc(d.title) + '…') + '</div>';
+      else if (d.err) body = '<div class="empty">' + esc(d.err) + '</div>' + (d.link ? '<div class="gfb"><div class="gb"><button class="btn sm pri" data-a="paste">' + ic('link') + 'Tempel link lain</button></div></div>' : '');
+      else if (!d.items.length) body = d.q ? '<div class="empty"><b>“' + esc(d.title) + '” belum ada di data peta Amatu</b><br><small>Data tempat dari OpenStreetMap & Overture (Meta, Microsoft) — belum selengkap Google.</small></div>' + gfb(true)
+        : '<div class="empty">Tidak ada hasil untuk “' + esc(d.title) + '” di area ini.<br><small>Coba geser/perkecil peta lalu cari lagi.</small></div>';
+      else {
+        const any = d.items.some(strong);
+        let split = false;
+        body = (d.q && !any && !d.loading ? '<div class="rhint">Tidak ada yang cocok persis dengan “' + esc(d.title) + '”. Yang mirip di sekitar:</div>' : '') +
+          d.items.map((r, i) => {
+            let pre = '';
+            if (any && !split && !strong(r)) { split = true; pre = '<div class="rhint">Yang mirip di sekitar</div>'; }
+            return pre + row(r, i);
+          }).join('') + (d.loading ? '<div class="loading sm"><span class="spin"></span>Mencari tempat usaha di sekitar…</div>' : '') + (d.q && !d.loading ? gfb(!any) : '');
+      }
       return '<div class="pbar"><button class="ib" data-a="back" aria-label="Kembali">' + ic('back') + '</button><div class="tt">' + esc(d.title) + (d.items && d.items.length ? ' <small class="mut">· ' + d.items.length + '</small>' : '') + '</div>' +
         (d.cat ? '<button class="btn sm" data-a="again">' + ic('search') + 'Cari di area ini</button>' : '') + '<button class="ib" data-a="close" aria-label="Tutup">' + ic('x') + '</button></div>' + body;
     },
@@ -270,6 +311,7 @@
           if (a === 'back') return PV.back();
           if (a === 'close') return PV.close();
           if (a === 'again') return A().searchCat(d.cat);
+          if (a === 'paste') return A().pasteLink();
           if (a === 'dir') { e.stopPropagation(); return DIR.open({ to: d.items[+b.dataset.i] }); }
         }
         const r = e.target.closest('.res');
@@ -307,10 +349,14 @@
       rows.push('<div class="row click" data-a="copy" data-v="' + G.fmtLL([p.lng, p.lat], 6) + '">' + ic('locate') + '<div class="rt">' + G.fmtLL([p.lng, p.lat], 6) + '<small>Koordinat · ketuk untuk salin</small></div></div>');
       rows.push('<div class="row" data-r="wx">' + ic('sun') + '<div class="rt mut">Cuaca & ketinggian…</div></div>');
       rows.push('<a class="row click" target="_blank" rel="noopener" href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=' + p.lat.toFixed(6) + ',' + p.lng.toFixed(6) + '">' + ic('street') + '<div class="rt">Street View<small>Buka foto jalan di Google Maps (tab baru)</small></div></a>');
+      if (p.link && p.link.url) rows.push('<a class="row click" target="_blank" rel="noopener" href="' + esc(p.link.url) + '">' + ic('link') + '<div class="rt">Buka di ' + esc(AM.L.srcName(p.link.src)) + '<small>Foto, ulasan & jam buka di sana · tempat ini dari link yang Anda tempel</small></div></a>');
+      else if (named(p)) rows.push('<a class="row click" target="_blank" rel="noopener" href="' + esc(AM.L.googleSearch(p.name + (p.addr ? ', ' + p.addr : ''))) + '">' + ic('search') + '<div class="rt">Lihat di Google Maps<small>Foto, ulasan & jam buka (tab baru)</small></div></a>');
+      const added = D.places().find(x => x.id === p.pid) || (p.link ? D.places().find(x => G.dist([x.lng, x.lat], [p.lng, p.lat]) < 40) : null);
+      if (added) rows.push('<div class="row click" data-a="unlink" data-v="' + esc(added.id) + '">' + ic('trash') + '<div class="rt">Hapus dari tempat tambahan<small>Ditambahkan ' + esc(U.day(added.t)) + ' dari link ' + esc(AM.L.srcName((added.link || {}).src)) + '</small></div></div>');
       if (p.osm && p.osm.id) rows.push('<a class="row click" target="_blank" rel="noopener" href="https://www.openstreetmap.org/' + ({ N: 'node', W: 'way', R: 'relation' }[String(p.osm.t)[0].toUpperCase()] || 'node') + '/' + p.osm.id + '">' + ic('edit') + '<div class="rt">Lihat / perbaiki di OpenStreetMap</div></a>');
       else if (p.ov) rows.push('<div class="row">' + ic('info') + '<div class="rt mut">Data tempat usaha: Overture Maps<small>Sumber Meta, Microsoft & lainnya (CDLA-Permissive-2.0)</small></div></div>');
       return '<div class="pbar"><button class="ib" data-a="back" aria-label="Kembali">' + ic('back') + '</button><div class="tt"></div><button class="ib" data-a="close" aria-label="Tutup">' + ic('x') + '</button></div>' +
-        '<div class="ph"><h2>' + esc(p.name || 'Titik di peta') + '</h2><div class="cat">' + esc(p.cat || '') + (p.dist ? ' · ' + esc(p.dist) : '') + '</div><div class="sub" data-r="status"></div></div>' +
+        '<div class="ph"><h2>' + esc(p.name || 'Titik di peta') + '</h2><div class="cat">' + esc([p.cat || (p.link ? 'Dari link ' + AM.L.srcName(p.link.src) : ''), p.dist].filter(Boolean).join(' · ')) + '</div><div class="sub" data-r="status"></div></div>' +
         '<div class="acts"><button class="act pri" data-a="dir"><i>' + ic('dir') + '</i>Rute</button><button class="act" data-a="start"><i>' + ic('nav') + '</i>Mulai</button>' +
         '<button class="act' + (saved ? ' on' : '') + '" data-a="save"><i>' + ic('bookmark') + '</i>' + (saved ? 'Tersimpan' : 'Simpan') + '</button><button class="act" data-a="nearby"><i>' + ic('search') + '</i>Di sekitar</button>' +
         '<button class="act" data-a="send"><i>' + ic('send') + '</i>Kirim ke HP</button><button class="act" data-a="share"><i>' + ic('share') + '</i>Bagikan</button></div>' +
@@ -331,6 +377,7 @@
         if (a === 'send') { D.send({ type: 'place', p: { name: p.name, addr: p.addr, lng: p.lng, lat: p.lat, cat: p.cat, osm: p.osm || null } }); return U.toast('Terkirim. Buka Amatu Maps di HP/perangkat lain untuk melihatnya.'); }
         if (a === 'share') return A().share(p.name, A().link({ p }));
         if (a === 'ohx') { const t = el.querySelector('.oh'); if (t) t.hidden = !t.hidden; }
+        if (a === 'unlink') { D.delPlace(b.dataset.v); b.remove(); return U.toast('Dihapus dari tempat tambahan'); }
       };
       // address, details, weather — fill in when they arrive
       const id = p._tok = U.uid();
@@ -338,11 +385,26 @@
       if (!p.addr) Q.reverse([p.lng, p.lat]).then(r => {
         if (!alive()) return;
         const row = el.querySelector('[data-r="addr"]');
-        const addr = r ? [r.name !== p.name ? r.name : '', r.addr].filter(Boolean).join(', ') : '';
+        // a named place (e.g. from a Google Maps link) keeps its own name: only a street / house number goes in front of the address
+        const lead = r && r.name !== p.name && (!named(p) || !r.poi) ? r.name : '';
+        const addr = r ? [lead, r.addr].filter(Boolean).join(', ') : '';
         p.addr = addr || 'Alamat tidak diketahui';
+        if (p.link && addr) { const it = D.places().find(x => G.dist([x.lng, x.lat], [p.lng, p.lat]) < 40); if (it && !it.addr) D.updPlace(it.id, { addr }); }
         if (!p.name || p.name === 'Titik di peta') { p.name = r && r.name ? r.name : 'Titik di peta'; const h = el.querySelector('.ph h2'); if (h) h.textContent = p.name; }
         if (row) row.innerHTML = ic('pin') + '<div class="rt">' + esc(p.addr) + '</div>';
       });
+      // a place from a link: phone / hours / OSM page from open data when the same place is there too
+      if (p.link && !p._enr && named(p)) {
+        p._enr = true;
+        Q.find(p.name, [p.lng, p.lat], { zoom: 17, rings: 1, limit: 5, mine: false }).then(res => {
+          const m = res.find(r => G.dist([r.lng, r.lat], [p.lng, p.lat]) < 150 && r.score >= 0.6 && (r.ov || r.osm));
+          if (!m || !alive()) return;
+          if (m.ov) p.ov = m.ov;
+          if (m.osm) p.osm = m.osm;
+          if (!p.cat && m.cat) p.cat = m.cat;
+          PV.refresh();
+        }).catch(() => { });
+      }
       if (p.osm && p.osm.id) Q.details(p.osm).then(t => {
         if (!alive() || !t) return;
         const box = el.querySelector('[data-r="extra"]'), out = [];

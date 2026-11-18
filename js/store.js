@@ -4,7 +4,7 @@
   'use strict';
   const AM = window.AM = window.AM || {};
   const U = AM.U;
-  const K = { cfg: 'maps.cfg', saved: 'maps.saved', recent: 'maps.recent', trips: 'maps.trips', kirim: 'maps.kirim' };
+  const K = { cfg: 'maps.cfg', saved: 'maps.saved', recent: 'maps.recent', trips: 'maps.trips', kirim: 'maps.kirim', places: 'maps.places' };
 
   const DEF_FUELS = [
     { id: 'bensin', n: 'Bensin (Pertalite)', p: 10000, sub: true },
@@ -67,6 +67,24 @@
       U.set(K.recent, l.slice(0, 40));
     },
     clearRecent() { U.set(K.recent, []); },
+    // ---------- places added from a map link (Google Maps share links …): the search finds them by name later ----------
+    places() { const l = U.get(K.places, []); return Array.isArray(l) ? l : []; },
+    addPlace(pl) {
+      const G = AM.G, l = D.places().filter(x => !(G.dist([x.lng, x.lat], [pl.lng, pl.lat]) < 40 && (x.name === pl.name || !pl.name)));
+      const it = { id: U.uid(), name: pl.name || 'Tempat', addr: pl.addr || '', lng: +(+pl.lng).toFixed(7), lat: +(+pl.lat).toFixed(7), cat: pl.cat || '', link: pl.link || null, t: Date.now() };
+      l.unshift(it); U.set(K.places, l.slice(0, 500)); return it;
+    },
+    updPlace(id, patch) { const l = D.places(), it = l.find(x => x.id === id); if (it) { Object.assign(it, patch); U.set(K.places, l); } },
+    delPlace(id) { U.set(K.places, D.places().filter(x => x.id !== id)); },
+    // the user's own places for the search: added from links, saved, Rumah/Kantor, recently opened
+    mine() {
+      const out = [], R = (x, extra) => out.push(Object.assign({ name: x.name, addr: x.addr || '', lng: x.lng, lat: x.lat, cat: x.cat || '', osm: x.osm || null, ov: x.ov || undefined, link: x.link || null }, extra));
+      for (const x of D.places()) R(x, { ic: 'link', mine: 'link', pid: x.id, cat: x.cat || 'Ditambahkan dari link' });
+      for (const x of D.saved.items) R(x, { ic: 'bookmark', mine: 'saved' });
+      for (const [k, n] of [['home', 'Rumah'], ['work', 'Kantor']]) { const x = D.saved[k]; if (x) R(x, { ic: k, mine: k, cat: n }); }
+      for (const x of D.recent()) if (!x.q && x.name && isFinite(x.lng)) R(x, { ic: 'history', mine: 'recent' });
+      return out;
+    },
     // ---------- trips ----------
     trips() { return (U.get(K.trips, []) || []).filter(t => !t.sim); },     // (old simulated drives are not real trips)
     pushTrip(t) { const l = U.get(K.trips, []) || []; l.unshift(t); U.set(K.trips, l.slice(0, 300)); },

@@ -198,6 +198,32 @@
     return s / qt.length;
   }
 
+  // words that name a kind of place → Overture basic_category. "send2 laundry" not listed anywhere open → show the
+  // laundries around instead of nothing (Google does the same).
+  const CATQ = [
+    [/^(laundry|laundri|londri|binatu|penatu|cucian|dryclean)$/, /laundry|dry_clean/],
+    [/^(bengkel|tambal|servis|service|oli)$/, /auto_repair|automotive|vehicle_service|motorcycle_repair|tire/],
+    [/^(apotek|apotik|farmasi)$/, /pharmacy|drugstore/],
+    [/^(salon|barber|barbershop|pangkas|potong)$/, /beauty|salon|barber|hair/],
+    [/^(warung|resto|restoran|makan|bakso|soto|sate|mie|mi|ayam|seafood|penyetan|angkringan|bakmi)$/, /restaurant|eatery|food/],
+    [/^(kafe|cafe|kopi|coffee|kedai)$/, /cafe|coffee|tea|beverage/],
+    [/^(hotel|penginapan|losmen|homestay|guesthouse|villa|resort)$/, /hotel|accommodation|lodging|guest|resort/],
+    [/^(klinik|dokter|bidan|puskesmas)$/, /clinic|doctor|health|medical/],
+    [/^(sekolah|sd|smp|sma|smk|tk|paud|kampus|universitas)$/, /school|education|college|university|kindergarten/],
+    [/^(masjid|musholla|mushola|musala)$/, /mosque|muslim/],
+    [/^(gereja)$/, /church|christian/],
+    [/^(fotokopi|fotocopy|percetakan|printing)$/, /print|copy/],
+    [/^(kos|kost|kosan)$/, /lodging|accommodation|real_estate/],
+    [/^(toko|shop|store)$/, /store|shop/],
+  ];
+  const catRe = qt => { for (const t of qt) for (const [w, re] of CATQ) if (w.test(t)) return re; return null; };
+  // "Kota Magelang, Jawa Tengah" of a hit (so "indomaret magelang" matches "Indomaret Pahlawan" in Magelang)
+  function locality(h) {
+    if (h.loc !== undefined) return h.loc;
+    let a = null; try { a = (JSON.parse(h.p.addresses || '[]') || [])[0]; } catch (e) { /* none */ }
+    return (h.loc = a ? normName([a.locality, a.region].filter(Boolean).join(' ')) : '');
+  }
+
   // ---------- labels ----------
   const CAT = {
     restaurant: 'Restoran', casual_eatery: 'Rumah makan', fast_food_restaurant: 'Makanan cepat saji', cafe: 'Kafe', coffee_shop: 'Kedai kopi', bakery: 'Toko roti',
@@ -270,18 +296,26 @@
       const ref = refs[0], seen = new Set(), hits = [];
       const plan = ringTiles(ref, 0, rings);
       for (const r2 of refs.slice(1)) if (G.dist(r2, ref) > 4000) plan.push(...ringTiles(r2, 0, Math.min(1, rings)).map(t => [t[0], t[1], t[2] + 1]));
-      const look = list => {
+      const kind = qt.length > 1 ? catRe(qt) : null;
+      const look = (list, ring) => {
         for (const h of list) {
-          const s = score(h.nn, qt, typing);
-          if (s < 0.74) continue;
+          let s = score(h.nn, qt, typing), rel = false;
+          if (s < 0.74 && s >= 0.3) { const lc = locality(h); if (lc) s = Math.max(s, score(h.nn + ' ' + lc, qt, typing) * 0.92); }
+          if (s < 0.74) {
+            if (!(kind && ring <= 2 && kind.test(h.cat))) continue;
+            rel = true; s = 0.45;                                // same kind of place, other name
+          }
           const k = h.nn + '|' + h.lng.toFixed(4) + h.lat.toFixed(4);
           if (seen.has(k)) continue; seen.add(k);
           const d = Math.min(...refs.map(r => G.dist(r, [h.lng, h.lat])));
           const exact = h.nn === qt.join(' ') || h.nn.replace(/^(pt|cv|ud) /, '') === qt.join(' ');
-          hits.push({ h, s, d, rank: s * 100 + (exact ? 12 : 0) + h.conf * 8 - Math.log2(1 + d / 400) * 4 - Math.max(0, h.nn.split(' ').length - qt.length) * 1.5 });
+          hits.push({ h, s, d, rel, rank: rel ? 20 + h.conf * 8 - Math.log2(1 + d / 400) * 5 : s * 100 + (exact ? 12 : 0) + h.conf * 8 - Math.log2(1 + d / 400) * 4 - Math.max(0, h.nn.split(' ').length - qt.length) * 1.5 });
         }
       };
-      const out = () => hits.slice().sort((a, b) => b.rank - a.rank).slice(0, lim).map(x => Object.assign(place(x.h), { d: x.d, score: x.s }));
+      const out = () => {
+        const all = hits.slice().sort((a, b) => b.rank - a.rank), real = all.filter(x => !x.rel).slice(0, lim);
+        return real.concat(all.filter(x => x.rel).slice(0, Math.min(6, lim))).map(x => Object.assign(place(x.h), { d: x.d, score: x.s, rel: x.rel }));
+      };
       // always look ±6 km (typing) / ±8.5 km (search) around the point; farther only while nothing (or little) matched
       let strong = 0;
       const minRing = typing ? 2 : 3;
@@ -291,7 +325,7 @@
         const batch = plan.filter(t => t[2] === step);
         await pool(batch, 6, async ([x, y]) => {
           if (o.signal && o.signal.aborted) return;
-          try { look(await tile(x, y)); } catch (e) { /* offline / blocked tile */ }   // (no abort: a tile once asked for is kept)
+          try { look(await tile(x, y), step); } catch (e) { /* offline / blocked tile */ }   // (no abort: a tile once asked for is kept)
         });
         strong = hits.filter(x => x.s >= 0.99).length;
         if (o.onUpdate && hits.length) o.onUpdate(out());

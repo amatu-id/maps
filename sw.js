@@ -1,7 +1,7 @@
 // Amatu Maps · service worker: the app itself (page, scripts, styles, SPBU data) for a start without signal.
 // Map tiles are cached by js/offline.js (Cache Storage), not here. Built by build.sh (version + file list).
-const V = 'f7e14c0aa9c9', SHELL = 'amatu-maps-shell-' + V, EXT = 'amatu-maps-ext', DATA = 'amatu-maps-data';
-const FILES = ["./","./index.html","./vendor/maplibre-gl.css?v=f7e14c0aa9c9","./app.css?v=f7e14c0aa9c9","./vendor/maplibre-gl.js?v=f7e14c0aa9c9","./js/util.js?v=f7e14c0aa9c9","./js/geo.js?v=f7e14c0aa9c9","./js/heading.js?v=f7e14c0aa9c9","./js/mvt.js?v=f7e14c0aa9c9","./js/style.js?v=f7e14c0aa9c9","./js/search.js?v=f7e14c0aa9c9","./js/ovt.js?v=f7e14c0aa9c9","./js/offline.js?v=f7e14c0aa9c9","./js/route.js?v=f7e14c0aa9c9","./js/poi.js?v=f7e14c0aa9c9","./js/store.js?v=f7e14c0aa9c9","./js/mapui.js?v=f7e14c0aa9c9","./js/panels.js?v=f7e14c0aa9c9","./js/nav.js?v=f7e14c0aa9c9","./js/app.js?v=f7e14c0aa9c9"];
+const V = 'b0a522680b73', SHELL = 'amatu-maps-shell-' + V, EXT = 'amatu-maps-ext', DATA = 'amatu-maps-data';
+const FILES = ["./","./index.html","./vendor/maplibre-gl.css?v=b0a522680b73","./app.css?v=b0a522680b73","./vendor/maplibre-gl.js?v=b0a522680b73","./js/util.js?v=b0a522680b73","./js/geo.js?v=b0a522680b73","./js/heading.js?v=b0a522680b73","./js/mvt.js?v=b0a522680b73","./js/style.js?v=b0a522680b73","./js/search.js?v=b0a522680b73","./js/ovt.js?v=b0a522680b73","./js/links.js?v=b0a522680b73","./js/offline.js?v=b0a522680b73","./js/route.js?v=b0a522680b73","./js/poi.js?v=b0a522680b73","./js/store.js?v=b0a522680b73","./js/mapui.js?v=b0a522680b73","./js/panels.js?v=b0a522680b73","./js/nav.js?v=b0a522680b73","./js/app.js?v=b0a522680b73"];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(SHELL).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
 });

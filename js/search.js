@@ -196,19 +196,31 @@
     const OV = AM.OV, qt = OV.qTokens(q), qn = qt.join(' '), qfull = OV.normName(q), typing = !!o.typing, home = inID(refs[0]);
     const out = [];
     const near = ll => Math.min(...refs.map(r => G.dist(r, ll)));
+    const same = (a, b, m) => G.dist([a.lng, a.lat], [b.lng, b.lat]) < m && (OV.normName(a.name) === OV.normName(b.name) || OV.score(OV.normName(a.name), OV.qTokens(b.name), false) > 0.8);
+    // the user's own places first (added from a Google Maps link, saved, Rumah/Kantor, opened before): real name matches only
+    for (const r of o.mine || []) {
+      const nn = OV.normName(r.name);
+      let s = OV.score(nn, qt, typing);
+      if (r.addr) s = Math.max(s, OV.score(OV.normName(r.name + ' ' + r.addr), qt, typing) * 0.9);
+      if (s < 0.74 || out.some(x => same(x, r, 60))) continue;
+      const d = near([r.lng, r.lat]), exact = nn === qn || nn === qfull;
+      out.push(Object.assign({}, r, { d, score: Math.max(s, 0.75), rank: s * 100 + 30 + (exact ? 12 : 0) + (r.mine === 'recent' ? 0 : 4) - Math.log2(1 + d / 400) * 2 }));
+    }
+    const mineN = out.length, dupMine = x => out.slice(0, mineN).some(m => same(m, x, 120));
     for (const r of osm) {
       const ll = [r.lng, r.lat], d = near(ll);
       let s = OV.score(OV.normName(r.name), qt, typing);
       if (r.addr) s = Math.max(s, OV.score(OV.normName(r.name + ' ' + r.addr), qt, typing) * 0.9);
       const area = /^(city|state|country|district|county|locality)$/.test(r.type || '') || r.key === 'place' || r.key === 'boundary';
-      if (home && r.cc && r.cc !== 'ID' && s < 0.85) continue;            // Kuba / Portugal noise for an Indonesian query
+      if (home && r.cc && r.cc !== 'ID' && (s < 0.85 || (s < 0.99 && out.some(x => x.score >= 0.74)))) continue;   // Kuba / Portugal / "send2china" London noise
       if (d > 300000 && s < 0.6 && !area) continue;
-      if (s < 0.3 && !area && d > 30000) continue;
+      if (s < 0.74 && !area && d > 15000) continue;             // a word of the query is missing and it is far ("send2 laundry" → a laundry in Semarang)
+      if (dupMine(r)) continue;
       const nn = OV.normName(r.name), exact = nn === qn || nn === qfull;
       out.push(Object.assign(r, { d, score: s, rank: s * 100 + (exact ? 12 : 0) + (nn === qfull ? 10 : 0) + (area && s > 0.9 ? 6 : 0) + 4 - Math.log2(1 + d / 400) * 4 }));
     }
     for (const r of ov) {
-      const dup = out.find(x => x.src !== 'ov' && G.dist([x.lng, x.lat], [r.lng, r.lat]) < 150 && (OV.normName(x.name) === OV.normName(r.name) || OV.score(OV.normName(x.name), OV.qTokens(r.name), false) > 0.8));
+      const dup = out.find(x => x.src !== 'ov' && same(x, r, 150));
       if (dup) { if (!dup.ov) { dup.ov = r.ov; if (!dup.addr) dup.addr = r.addr; } continue; }
       const nn = OV.normName(r.name), exact = nn === qn || nn.replace(/^(pt|cv|ud) /, '') === qn;
       out.push(Object.assign(r, { rank: r.score * 100 + (exact ? 12 : 0) + (nn === qfull ? 10 : 0) + (r.conf || 0) * 8 - Math.log2(1 + r.d / 400) * 4 }));
@@ -230,12 +242,14 @@
       return {
         id: (p.osm_type || '') + (p.osm_id || ''), name, cat: catLabel(p.osm_key, p.osm_value, p.type), ic: iconOf(p.osm_key, p.osm_value),
         key: p.osm_key, val: p.osm_value, addr: parts.join(', '), lng: c[0], lat: c[1], ext: p.extent || null,
-        osm: p.osm_type ? { t: p.osm_type, id: p.osm_id } : null, type: p.type, pc: p.postcode || '', cc: (p.countrycode || '').toUpperCase()
+        osm: p.osm_type ? { t: p.osm_type, id: p.osm_id } : null, type: p.type, pc: p.postcode || '', cc: (p.countrycode || '').toUpperCase(),
+        poi: !!p.name && !/^(highway|place|boundary|landuse|natural|waterway)$/.test(p.osm_key || '')
       };
     },
     // everything for a typed name: OpenStreetMap (Photon) + Overture business listings near the map / the user.
     // o: {zoom, user, typing, limit, rings, signal, onUpdate(list)} → final list
     async find(q, ref, o = {}) {
+      if (o.mine === undefined && AM.D && AM.D.mine) o = Object.assign({}, o, { mine: AM.D.mine() });
       const refs = [ref];
       if (o.user && G.dist(o.user, ref) > 3000) refs.push(o.user);
       let osm = [], ov = [], err = null;
@@ -270,7 +284,8 @@
         if (d && d.lat) {
           const a = d.address || {};
           return { id: (d.osm_type || '')[0] + d.osm_id, name: d.name || a.road || a.village || a.suburb || d.display_name.split(',')[0], cat: catLabel(d.category, d.type), ic: iconOf(d.category, d.type),
-            addr: [a.road, a.village || a.suburb, a.city || a.town || a.county, a.state].filter(Boolean).join(', '), lng: +d.lon, lat: +d.lat, osm: d.osm_type ? { t: d.osm_type[0].toUpperCase(), id: d.osm_id } : null };
+            addr: [a.road, a.village || a.suburb, a.city || a.town || a.county, a.state].filter(Boolean).join(', '), lng: +d.lon, lat: +d.lat, osm: d.osm_type ? { t: d.osm_type[0].toUpperCase(), id: d.osm_id } : null,
+            poi: !!d.name && !/^(highway|place|boundary|landuse|natural|waterway)$/.test(d.category || '') };
         }
       } catch (e) { /* none */ }
       return null;

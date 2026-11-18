@@ -16,7 +16,9 @@
   const A = AM.A = {
     map: null,
     st: { user: null, acc: null, heading: NaN, speed: 0, loc: 'off', watch: null, waiters: [], night: null, fixT: 0, uMove: false, touch: 0 },
-    center() { const c = A.map.getCenter(); return [c.lng, c.lat]; },
+    center() { if (!A.map) { const v = U.get('pt.maps.view', null); return v && v.c ? v.c : [117.8, -2.6]; } const c = A.map.getCenter(); return [c.lng, c.lat]; },
+    // the map object is made after the style arrives (slow signal: seconds) — searches and links wait for it
+    whenMap() { return A.map ? Promise.resolve(A.map) : (A._mapP || (A._mapP = new Promise(res => { A._mapRes = res; }))); },
   };
 
   // ================= map =================
@@ -34,6 +36,7 @@
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric', maxWidth: 90 }), 'bottom-right');
     map.keyboard.enable();
     A.map = map;
+    if (A._mapRes) A._mapRes(map);
     map.on('load', () => {
       const at = document.querySelector('.maplibregl-ctrl-attrib');
       if (at && U.mobile()) at.classList.remove('maplibregl-compact-show');
@@ -44,9 +47,10 @@
       chips();
       layersThumb();
       A.hash();
+      if (M.pendCam) { const f = M.pendCam; M.pendCam = null; f(); }   // a place opened while the map was loading
       A.checkKirim();
       A.resumeCheck();
-      if (!v) navigator.permissions && navigator.permissions.query({ name: 'geolocation' }).then(p => { if (p.state === 'granted') A.locate({ fly: true, quiet: true }).catch(() => { }); }).catch(() => { });
+      if (!v) navigator.permissions && navigator.permissions.query({ name: 'geolocation' }).then(p => { if (p.state === 'granted') A.locate({ fly: !PV.cur(), quiet: true }).catch(() => { }); }).catch(() => { });
       else if (navigator.permissions) navigator.permissions.query({ name: 'geolocation' }).then(p => { if (p.state === 'granted') A.locate({ quiet: true }).catch(() => { }); }).catch(() => { });
     });
     // a tile that can't load (no signal, outside the saved route) just stays empty: no console noise per tile
@@ -281,6 +285,7 @@
     },
     onEnter: v => { sac.hide(); q.blur(); A.search(v); },
     onInput: () => { $('#bClear').hidden = !q.value; },
+    onLink: t => { q.blur(); A.openLink(t); },
   });
   $('#sbox').onsubmit = e => { e.preventDefault(); sac.hide(); A.search(q.value.trim()); q.blur(); };
   $('#bClear').onclick = () => { q.value = ''; $('#bClear').hidden = true; sac.hide(); if (PV.is('results') || PV.is('place')) PV.close(); q.focus(); };
@@ -294,14 +299,16 @@
     [/^(rumah sakit|rs|klinik|puskesmas)$/i, 'rs'], [/^(apotek|apotik)$/i, 'apotek'], [/^(parkir|parking)$/i, 'parkir'], [/^(bengkel|tambal ban)$/i, 'bengkel'], [/^(spklu|charging|cas mobil)$/i, 'spklu'], [/^(wisata|tempat wisata)$/i, 'wisata'], [/^(toilet|wc)$/i, 'toilet']];
   A.search = async text => {
     text = (text || '').trim(); if (!text) return;
+    if (AM.L.isLink(text)) return A.openLink(text);
     q.value = text; $('#bClear').hidden = false;
     const c = G.parse(text, A.center());
     if (c) return A.openPlace({ name: 'Titik koordinat', lng: c[0], lat: c[1] });
     const cw = CAT_WORDS.find(([re]) => re.test(text));
     if (cw) { D.pushRecent({ q: text }); return A.searchCat(cw[1]); }
     D.pushRecent({ q: text });
-    const data = { title: text, items: [], loading: true };
+    const data = { title: text, q: text, items: [], loading: true };
     PV.open('results', data, { root: true });
+    await A.whenMap();
     const u = A.st.user, z = A.map.getZoom(), ref = z >= 10 || !u ? A.center() : u;
     const mine = () => PV.is('results') && PV.cur().data === data;
     const show = res => {
@@ -314,9 +321,44 @@
       data.loading = false; data.more = false;
       if (!mine()) return;
       show(res);
-      if (res.length === 1 || (res.length > 1 && res[0].score >= 0.99 && !(res[1].score >= 0.99))) return A.openPlace(res[0], { replace: res.length === 1 });
+      const sure = r => r && (r.score >= 0.74 || r.mine);
+      if (sure(res[0]) && (res.length === 1 || (res[0].score >= 0.99 && !(res[1].score >= 0.99)) || (res[0].mine && !sure(res[1])))) return A.openPlace(res[0], { replace: res.length === 1 });
       if (res.length) M.fit(G.bbox(res.slice(0, 12).map(r => [r.lng, r.lat])), { maxZoom: 15 });
     } catch (e) { data.loading = false; data.more = false; data.err = navigator.onLine ? 'Pencarian gagal. Periksa koneksi lalu coba lagi.' : 'Anda sedang offline — pencarian butuh sinyal.'; if (mine()) PV.refresh(); }
+  };
+  // a Google Maps (Apple Maps, OSM, Waze …) link → the place, kept in maps.places so the search knows it next time
+  A.openLink = async text => {
+    sac.hide();
+    const data = { title: 'Link peta', link: true, items: [], loading: true };
+    PV.open('results', data, { root: true });
+    const mine = () => PV.is('results') && PV.cur().data === data;
+    try {
+      const r = await AM.L.resolve(text);
+      await A.whenMap();
+      if (!mine()) return;
+      if (r.q) {                                          // a search link ("…/maps/search/laundry"): search it here
+        if (r.near) A.map.jumpTo({ center: r.near, zoom: Math.max(A.map.getZoom(), 13) });
+        return A.search(r.q);
+      }
+      const it = D.addPlace(r.place);
+      const pl = Object.assign({}, r.place, { pid: it.id });
+      q.value = pl.name; $('#bClear').hidden = false;
+      A.openPlace(pl, { replace: true });
+      U.toast('Tempat ditambahkan — lain kali cukup ketik “' + (pl.name.length > 28 ? pl.name.slice(0, 26) + '…' : pl.name) + '”', { ms: 4200 });
+    } catch (e) {
+      data.loading = false; data.err = e.message || 'Link tidak bisa dibuka.';
+      if (mine()) PV.refresh();
+    }
+  };
+  A.pasteLink = async () => {
+    let t = '';
+    try { if (navigator.clipboard && navigator.clipboard.readText) t = await navigator.clipboard.readText(); } catch (e) { /* not allowed: ask */ }
+    if (!t || !AM.L.isLink(t)) {
+      t = await U.modal('Tempel link Google Maps', '<p class="mut" style="margin:0 0 10px">Di Google Maps buka tempatnya, ketuk <b>Bagikan → Salin link</b>, lalu tempel di sini.</p><label class="fld">Link<input id="lk" type="url" inputmode="url" placeholder="https://maps.app.goo.gl/…" value="' + esc(t && t.length < 400 ? t : '') + '"></label>',
+        [{ label: 'Batal', value: null }, { label: 'Buka', kind: 'pri', fn: w => w.querySelector('#lk').value.trim() || false }]);
+      if (!t) return;
+    }
+    A.openLink(t);
   };
   A.searchCat = async id => {
     const cat = Q.catOf(id); if (!cat) return;
@@ -377,8 +419,8 @@
     if (u && !place.dist) place.dist = U.dist(G.dist(u, [place.lng, place.lat]));
     const cur = PV.cur();
     PV.open('place', place, { replace: o.replace || (cur && cur.view === 'place') });
-    if (!o.nofly) M.fly([place.lng, place.lat], Math.max(A.map.getZoom(), place.spbu ? 15.5 : 15));
-    if (place.name && place.name !== 'Titik di peta' && place.name !== 'Pin dijatuhkan' && place.name !== 'Titik koordinat') D.pushRecent({ name: place.name, addr: place.addr || '', lng: place.lng, lat: place.lat, cat: place.cat || '', osm: place.osm || null, ov: place.ov || undefined });
+    if (!o.nofly) M.fly([place.lng, place.lat], Math.max(A.map ? A.map.getZoom() : 0, place.spbu ? 15.5 : 15));
+    if (place.name && place.name !== 'Titik di peta' && place.name !== 'Pin dijatuhkan' && place.name !== 'Titik koordinat') D.pushRecent({ name: place.name, addr: place.addr || '', lng: place.lng, lat: place.lat, cat: place.cat || '', osm: place.osm || null, ov: place.ov || undefined, link: place.link || undefined });
   };
   A.onPanelClosed = () => { chipsOn(null); M.showPin(null); M.setResults([]); };
   A.saveDialog = async p => {
@@ -674,6 +716,7 @@
       '<p><b>Offline</b>: begitu rute dipilih, peta sepanjang rute disimpan otomatis. Saat sinyal hilang, peta & panah tetap bergerak (GPS tidak butuh data). Navigasi yang terputus bisa dilanjutkan.</p>' +
       '<p><b>Lokasi</b>: ketuk tombol lokasi sekali untuk mengikuti posisi, dua kali agar peta berputar mengikuti arah HP (mode kompas).</p>' +
       '<p><b>Lainnya</b>: mode siang/malam otomatis, satelit, medan 3D, gedung 3D, transportasi, jalur sepeda, ukur jarak & luas, simpan tempat & daftar, Rumah/Kantor, lokasi parkir, kirim tempat/rute ke HP (akun Portal AMATU), bagikan, cetak, cuaca & ketinggian.</p>' +
+      '<p><b>Tempat belum ada?</b> Data tempat Amatu Maps dari OpenStreetMap & Overture — tempat usaha baru kadang hanya terdaftar di Google Maps. Buka tempatnya di Google Maps, ketuk <b>Bagikan → Salin link</b>, lalu tempel di kolom cari (atau tombol <b>Tempel link</b>). Tempat itu terbuka di sini lengkap dengan rute & navigasi, dan diingat untuk pencarian berikutnya di semua perangkat akun Anda. Link Apple Maps, OpenStreetMap, Waze & koordinat juga bisa.</p>' +
       '<p class="mut"><b>Keterbatasan</b>: belum ada lalu lintas langsung, ulasan/foto tempat, jadwal transportasi umum, dan foto Street View sendiri (dibuka di Google) karena datanya tidak tersedia gratis. Data peta & SPBU dari OpenStreetMap — sebagian tempat mungkin belum terpetakan.</p>' +
       '<p class="mut">Pintasan: <b>/</b> cari · <b>Esc</b> tutup · klik kanan peta untuk menu.</p></div>', [{ label: 'Tutup', kind: 'pri' }], { cls: 'wide' });
   }
@@ -701,7 +744,8 @@
         const pts = prm.get('dir').split(';').map((s, i) => { const [la, lo] = s.split(',').map(Number); return { name: names[i] || G.fmtLL([lo, la], 5), lng: lo, lat: la }; });
         DIR.open({ from: pts[0], to: pts[pts.length - 1], mode: prm.get('m') || 'car' });
         if (pts.length > 2) { DIR.pts = pts; DIR.drawHead(); DIR.compute(true); }
-      } else if (prm.get('q')) A.search(prm.get('q'));
+      } else if (prm.get('link')) A.openLink(prm.get('link'));
+      else if (prm.get('q')) A.search(prm.get('q'));
       else if (prm.get('at')) { const m = /(-?[\d.]+),(-?[\d.]+),([\d.]+)z?/.exec(prm.get('at')); if (m) A.map.jumpTo({ center: [+m[2], +m[1]], zoom: +m[3] }); }
     } catch (e) { /* bad link */ }
     history.replaceState(null, '', location.pathname + location.search);
