@@ -213,33 +213,44 @@
         el.innerHTML = '<div class="cone"></div><div class="dot"></div><svg class="arw" viewBox="0 0 44 44"><circle cx="22" cy="22" r="20" fill="#fff" opacity=".96"/><path d="M22 7 33 34 22 28 11 34z" fill="#1a73e8" stroke="#1557b0" stroke-width="1.2" stroke-linejoin="round"/></svg>';
         M.me = new maplibregl.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' }).setLngLat(ll).addTo(M.map);
       }
-      M.me.setLngLat(ll);
+      M.me.setLngLat(ll); M._ll = ll;
       M.meEl.classList.toggle('nav', !!o.nav);
       M.meEl.classList.toggle('hd', isFinite(heading) && !o.nav);
       M.meEl.classList.toggle('stale', !!o.stale);
-      M.me.setRotation(isFinite(heading) ? heading : 0);
+      M._hd = isFinite(heading) ? heading : 0;
+      M.me.setRotation(M._hd);
       if (o.nav) M.me.setPitchAlignment('map');
+    },
+    // every animation frame: move / turn the dot or arrow only when it visibly changes
+    moveMe(ll, heading) {
+      if (!M.me) return M.showMe(ll, heading);
+      if (!M._ll || Math.abs(M._ll[0] - ll[0]) > 2e-8 || Math.abs(M._ll[1] - ll[1]) > 2e-8) { M.me.setLngLat(ll); M._ll = ll; }
+      const hd = isFinite(heading);
+      if (!M.meEl.classList.contains('nav') && M.meEl.classList.contains('hd') !== hd) M.meEl.classList.toggle('hd', hd);
+      if (hd && Math.abs(((heading - M._hd) % 360 + 540) % 360 - 180) > 0.05) { M._hd = heading; M.me.setRotation(heading); }
     },
     // padding that keeps the panel / sheet / search box clear
     pad(extra = 0) {
       const mob = U.mobile(), panel = !document.getElementById('panel').hidden && !document.body.classList.contains('pclosed');
-      if (mob) { const sh = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sh-h')) || 0; return { top: 120 + extra, bottom: Math.min(innerHeight * 0.6, sh) + 30 + extra, left: 36 + extra, right: 36 + extra }; }
-      return { top: 90 + extra, bottom: 60 + extra, left: (panel ? 408 : 0) + 60 + extra, right: 80 + extra };
+      if (mob) { const sh = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sh-h')) || 0; return { top: 118 + extra, bottom: Math.min(innerHeight * 0.6, sh) + 24 + extra, left: 28 + extra, right: 28 + extra }; }
+      const pw = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--pwid')) || 380;
+      return { top: 80 + extra, bottom: 50 + extra, left: (panel ? pw : 0) + 50 + extra, right: 70 + extra };
     },
     fit(bb, o = {}) {
       if (!bb) return;
+      if (AM.A && AM.A.unfollow && !AM.N.on) AM.A.unfollow();
       const map = M.map, p = M.pad();
       const w = map.getContainer().clientWidth - p.left - p.right, h = map.getContainer().clientHeight - p.top - p.bottom;
       if (w < 80 || h < 80) { map.easeTo({ center: [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2], zoom: Math.min(o.maxZoom || 15, map.getZoom()) }); return; }
       map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: p, maxZoom: o.maxZoom || 16, duration: U.reduced() ? 0 : (o.duration != null ? o.duration : 700), bearing: o.keepBearing ? map.getBearing() : 0, pitch: o.pitch != null ? o.pitch : (map.getPitch() > 40 && !AM.N.on ? 0 : map.getPitch()) });
     },
     fly(ll, z, o = {}) {
+      if (!o.keep && AM.A && AM.A.unfollow && !AM.N.on) AM.A.unfollow();
       const map = M.map, p = M.pad();
       const off = [(p.left - p.right) / 2, (p.top - p.bottom) / 2];
       const far = map.getBounds && !map.getBounds().contains(ll);
-      const opt = { center: ll, zoom: z != null ? z : Math.max(map.getZoom(), 15), offset: off, duration: U.reduced() ? 0 : 800 };
-      if (far && map.getZoom() < 9) map.flyTo(opt); else map.easeTo(opt);
-      void o;
+      const opt = { center: ll, zoom: z != null ? z : Math.max(map.getZoom(), 15), offset: off, duration: U.reduced() ? 0 : 900, essential: true };
+      if (far && map.getZoom() < 9) map.flyTo(Object.assign(opt, { duration: U.reduced() ? 0 : 1600, curve: 1.3 })); else map.easeTo(Object.assign(opt, { easing: t => 1 - Math.pow(1 - t, 3) }));
     },
   };
 })();

@@ -61,6 +61,16 @@
     return { 'text-color': '#ffffff', 'text-halo-color': 'rgba(0,0,0,.78)' };
   }
   const isRoadLine = id => /^(road|bridge|tunnel)_/.test(id) && !/rail|hatching|area_pattern|arrow/.test(id);
+  function guardNum(e) {
+    if (!Array.isArray(e)) return e;
+    const cmp = /^(<|<=|>|>=)$/.test(e[0]) && e.length >= 3;
+    const out = e.map(guardNum);
+    if (cmp) {
+      const g = out.slice(1).find(x => Array.isArray(x) && x[0] === 'get' && typeof x[1] === 'string' && x.length === 2);
+      if (g) return ['all', ['has', g[1]], out];
+    }
+    return out;
+  }
 
   const S = AM.S = {
     beforeId: null,             // first label layer above the roads: overlays go under the labels
@@ -79,6 +89,10 @@
         if (l.id === 'building-3d') { l.layout = Object.assign({}, l.layout, { visibility: 'none' }); l.paint['fill-extrusion-opacity'] = 0.85; }
         // poi labels a little earlier (Google shows shops/mosques from z15)
         if (l.id === 'poi_r1') l.minzoom = 14.5;
+        // [">=", ["get","rank"], 7] on a feature without rank fails anyway, but logs a warning per feature (rank,
+        // ref_length, admin_level): ["all", ["has", k], …] gives the same false without the noise
+        if (l.filter) l.filter = guardNum(l.filter);
+        for (const g of ['layout', 'paint']) if (l[g]) for (const k in l[g]) l[g][k] = guardNum(l[g][k]);
       }
       st.sources.esri = { type: 'raster', tiles: SAT, tileSize: 256, maxzoom: 19, attribution: 'Citra © Esri, Maxar, Earthstar Geographics' };
       st.sources.dem = { type: 'raster-dem', tiles: DEM, tileSize: 256, maxzoom: 14, encoding: 'terrarium', attribution: 'Elevasi: AWS Terrain Tiles' };

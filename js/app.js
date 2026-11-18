@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const AM = window.AM;
-  const { U, G, Q, R, P, D, M, S, PV, DIR, N, AC } = AM;
+  const { U, G, Q, R, P, D, M, S, PV, DIR, N, AC, H, O } = AM;
   const $ = U.$, esc = U.esc, ic = U.ic;
   const LOCALE = {
     'AttributionControl.ToggleAttribution': 'Atribusi', 'AttributionControl.MapFeedback': 'Masukan peta', 'Map.Title': 'Peta',
@@ -15,7 +15,7 @@
 
   const A = AM.A = {
     map: null,
-    st: { user: null, acc: null, heading: NaN, speed: 0, loc: 'off', watch: null, waiters: [], night: null, compass: NaN, fixT: 0 },
+    st: { user: null, acc: null, heading: NaN, speed: 0, loc: 'off', watch: null, waiters: [], night: null, fixT: 0, uMove: false, touch: 0 },
     center() { const c = A.map.getCenter(); return [c.lng, c.lat]; },
   };
 
@@ -27,7 +27,8 @@
     const v = U.get('pt.maps.view', null);
     const map = A.map = new maplibregl.Map({
       container: 'map', style, center: v ? v.c : [117.8, -2.6], zoom: v ? v.z : 4.4, bearing: v ? v.b || 0 : 0, pitch: v ? v.p || 0 : 0,
-      attributionControl: false, maxPitch: 70, locale: LOCALE, fadeDuration: 120, clickTolerance: 4, dragRotate: true, touchPitch: true,
+      attributionControl: false, maxPitch: 70, locale: LOCALE, fadeDuration: 150, clickTolerance: 4, dragRotate: true, touchPitch: true,
+      transformRequest: url => O.transform(url), maxTileCacheSize: 600,
     });
     map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: 'Rute <a href="https://valhalla1.openstreetmap.de" target="_blank">Valhalla/FOSSGIS</a> · Cari <a href="https://photon.komoot.io" target="_blank">Photon</a>' }), 'bottom-right');
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric', maxWidth: 90 }), 'bottom-right');
@@ -44,9 +45,12 @@
       layersThumb();
       A.hash();
       A.checkKirim();
+      A.resumeCheck();
       if (!v) navigator.permissions && navigator.permissions.query({ name: 'geolocation' }).then(p => { if (p.state === 'granted') A.locate({ fly: true, quiet: true }).catch(() => { }); }).catch(() => { });
       else if (navigator.permissions) navigator.permissions.query({ name: 'geolocation' }).then(p => { if (p.state === 'granted') A.locate({ quiet: true }).catch(() => { }); }).catch(() => { });
     });
+    // a tile that can't load (no signal, outside the saved route) just stays empty: no console noise per tile
+    map.on('error', e => { const m = String((e && e.error && (e.error.message || e.error)) || ''); if (/Failed to fetch|NetworkError|offline|HTTP 40[34]|HTTP 5\d\d|AbortError|Load failed/i.test(m) || !navigator.onLine) return; console.warn('map:', m); });
     map.on('sourcedata', e => { if (e.sourceId === 'openmaptiles') { const s = map.getSource('openmaptiles'); if (s && s.tiles && s.tiles[0]) Q.setTiles(s.tiles[0]); } });
     map.on('styleimagemissing', e => {
       if (/^(cat|fuel|sv|pin|dot)-/.test(e.id)) return M.images(map);
@@ -58,6 +62,12 @@
       if (M.st.spbuAll) spbuView();
     }, 400));
     map.on('rotate', northBtn); map.on('pitch', northBtn);
+    // the user's hands on the map: follow cameras wait (and a compass-mode rotation by hand goes back to north-up follow)
+    map.on('movestart', e => { if (e.originalEvent) A.st.uMove = true; });
+    map.on('moveend', () => { if (A.st.uMove) { A.st.uMove = false; loopOn(); } });
+    map.on('rotatestart', e => { if (e.originalEvent && A.st.loc === 'compass' && !N.on) { A.st.loc = 'follow'; locBtn(); } });
+    const cvc = map.getCanvasContainer(), tc = e => { A.st.touch = e.touches ? e.touches.length : 0; if (!A.st.touch) loopOn(); };
+    ['touchstart', 'touchend', 'touchcancel'].forEach(ev => cvc.addEventListener(ev, tc, { passive: true }));
     map.on('pitchend', () => { if (M.st.base === 'terrain') S.apply(map, Object.assign({}, M.st, { night: A.st.night })); });
     map.on('click', onClick);
     map.on('contextmenu', e => { if (!U.mobile()) ctxMenu(e.lngLat, e.point); });
@@ -111,6 +121,7 @@
     S.apply(A.map, Object.assign({}, M.st, { night: A.st.night }));
     M.themeOverlays(A.st.night);
     layersThumb(); if (!$('#layers').hidden) layersMenu();
+    if (b === 'sat' && DIR.route() && PV.is('dir')) DIR.offSave();
   }
   $('#bLayers').onclick = e => {
     if (U.mobile() || e.detail === 0) return layersMenu(true);
@@ -173,24 +184,25 @@
   // ================= location =================
   A.locate = (o = {}) => new Promise((res, rej) => {
     if (!navigator.geolocation) return rej(new Error('Perangkat tidak mendukung GPS'));
-    if (A.st.user && Date.now() - A.st.fixT < 30000) { if (o.fly) M.fly(A.st.user, Math.max(A.map.getZoom(), 16)); return res(A.st.user); }
+    H.start();
+    if (A.st.user && Date.now() - A.st.fixT < 30000) { if (o.fly) M.fly(A.st.user, Math.max(A.map.getZoom(), 15.5), { keep: true }); return res(A.st.user); }
     A.st.waiters.push({ res, rej, o });
-    if (A.st.watch == null) {
-      A.st.watch = navigator.geolocation.watchPosition(onPos, onPosErr, { enableHighAccuracy: true, maximumAge: 1500, timeout: 25000 });
-      compassOn();
-    }
+    if (A.st.watch == null) A.st.watch = navigator.geolocation.watchPosition(onPos, onPosErr, { enableHighAccuracy: true, maximumAge: 1000, timeout: 25000 });
   });
   function onPos(pos) {
-    const c = pos.coords, first = !A.st.user;
-    A.st.user = [c.longitude, c.latitude]; A.st.acc = c.accuracy; A.st.fixT = Date.now();
-    A.st.speed = isFinite(c.speed) && c.speed != null ? c.speed : 0;
-    if (isFinite(c.heading) && c.heading != null && A.st.speed > 1.5) A.st.heading = c.heading;
-    const hd = A.st.speed > 1.5 && isFinite(A.st.heading) ? A.st.heading : A.st.compass;
+    const c = pos.coords, first = !A.st.user, prev = A.st.user, prevT = A.st.fixT, ll = [c.longitude, c.latitude];
+    A.st.user = ll; A.st.acc = c.accuracy; A.st.fixT = Date.now();
+    A.st.speed = c.speed != null && isFinite(c.speed) && c.speed >= 0 ? c.speed : NaN;
+    if (c.heading != null && isFinite(c.heading) && c.heading >= 0 && A.st.speed > 1.5) A.st.heading = c.heading;
+    else if (prev && !N.on) {                       // no speed/course from the GPS: from the last fix
+      const d = G.dist(prev, ll), dt = (A.st.fixT - prevT) / 1000;
+      if (!isFinite(A.st.speed) && dt > 0.4 && dt < 15) A.st.speed = d / dt;
+      if (d > 6 && A.st.speed > 1.5) A.st.heading = G.bearing(prev, ll);
+    }
     if (N.on) N.fix({ ll: A.st.user, acc: c.accuracy, heading: A.st.speed > 1.5 ? A.st.heading : NaN, speed: A.st.speed, t: pos.timestamp || Date.now() });
-    else { M.showMe(A.st.user, hd); M.setAcc(A.st.user, c.accuracy); }
+    else { if (first) M.showMe(A.st.user, NaN); M.setAcc(A.st.user, c.accuracy); loopOn(); }
     const ws = A.st.waiters.splice(0);
-    ws.forEach(w => { if (w.o.fly) M.fly(A.st.user, Math.max(A.map.getZoom(), 16)); w.res(A.st.user); });
-    if (A.st.loc === 'follow' && !N.on) A.map.easeTo({ center: A.st.user, duration: 600 });
+    ws.forEach(w => { if (w.o.fly) M.fly(A.st.user, Math.max(A.map.getZoom(), 15.5), { keep: true }); w.res(A.st.user); });
     if (first) { A.theme(); locBtn(); if (DIR.pts && !DIR.pts[0] && PV.is('dir')) { DIR.pts[0] = DIR.gps(); DIR.drawHead(); DIR.compute(); } }
     progT();
   }
@@ -202,38 +214,58 @@
     ws.forEach(w => w.rej(new Error(msg)));
     if (err.code === 1) { navigator.geolocation.clearWatch(A.st.watch); A.st.watch = null; A.st.loc = 'off'; locBtn(); }
   }
-  function compassOn() {
-    const h = e => {
-      let hd = null;
-      if (e.webkitCompassHeading != null) hd = e.webkitCompassHeading;
-      else if (e.absolute && e.alpha != null) hd = (360 - e.alpha) % 360;
-      if (hd == null) return;
-      hd = (hd + (screen.orientation ? screen.orientation.angle || 0 : 0)) % 360;
-      A.st.compass = hd;
-      if (A.st.user && !N.on && !(A.st.speed > 1.5)) M.showMe(A.st.user, hd);
-      if (A.st.loc === 'compass' && !N.on) A.map.easeTo({ bearing: hd, duration: 200 });
-    };
-    if ('ondeviceorientationabsolute' in window) addEventListener('deviceorientationabsolute', h);
-    else addEventListener('deviceorientation', h);
+  // Every frame while the location is on (navigation draws its own): the dot glides to each GPS fix, the beam turns
+  // with the phone's compass, and in follow / compass mode the camera moves with it — no 1-second steps.
+  const L = { raf: 0, t: 0, ll: null, hd: NaN };
+  function loopOn() { if (!L.raf && !N.on) L.raf = requestAnimationFrame(frame); }
+  H.onchange = () => loopOn();
+  function frame(now) {
+    L.raf = 0;
+    if (N.on || !A.st.user || !A.map) return;
+    const dt = Math.min(120, Math.max(1, now - (L.t || now))); L.t = now;
+    const fix = A.st.user;
+    if (!L.ll || G.dist(L.ll, fix) > 400) L.ll = fix.slice();
+    else { const k = 1 - Math.exp(-dt / 380); L.ll = [L.ll[0] + (fix[0] - L.ll[0]) * k, L.ll[1] + (fix[1] - L.ll[1]) * k]; }
+    const moving = A.st.speed > 2.5 && isFinite(A.st.heading) && Date.now() - A.st.fixT < 5000;
+    const cmp = H.fresh(), tgt = cmp && !(moving && D.cfg.headSrc !== 'compass') ? H.raw : moving ? A.st.heading : NaN;
+    L.hd = isFinite(tgt) ? H.approach(L.hd, tgt, dt, cmp ? 80 : 250) : NaN;
+    M.moveMe(L.ll, L.hd);
+    const map = A.map, follow = A.st.loc === 'follow' || A.st.loc === 'compass';
+    if (follow && !A.busyMap()) {
+      const c = map.getCenter(), o = {};
+      if (G.dist([c.lng, c.lat], L.ll) > 0.1) o.center = L.ll;
+      if (A.st.loc === 'compass' && isFinite(L.hd) && Math.abs(H.diff(map.getBearing(), L.hd)) > 0.06) o.bearing = L.hd;
+      if (o.center || o.bearing != null) map.jumpTo(o);
+    }
+    // keep going while anything still moves; the compass wakes the loop again (H.onchange)
+    const still = G.dist(L.ll, fix) < 0.05 && (!isFinite(tgt) || Math.abs(H.diff(L.hd, tgt)) < 0.05);
+    if (!still || (cmp && performance.now() - H.t < 400)) L.raf = requestAnimationFrame(frame);
   }
+  // the user is touching / pinching / an animation runs: the follow camera waits
+  A.busyMap = () => A.st.uMove || A.st.touch > 0 || (A.map && A.map.isEasing && A.map.isEasing());
+  A.unfollow = () => { if (A.st.loc === 'follow' || A.st.loc === 'compass') { A.st.loc = 'on'; locBtn(); } };
   function locBtn() {
     const b = $('#bLoc'), s = A.st.loc;
     b.innerHTML = ic(s === 'compass' ? 'headup' : s === 'off' ? 'locate' : 'locon');
     b.classList.toggle('on', s !== 'off');
+    b.classList.toggle('cmp', s === 'compass');
+    b.title = s === 'compass' ? 'Peta mengikuti arah HP — ketuk untuk hadap utara' : s === 'follow' ? 'Mengikuti lokasi — ketuk lagi untuk mode kompas' : 'Lokasi saya';
   }
   $('#bLoc').onclick = async () => {
+    H.ask();                                   // iOS: compass permission must be asked inside the tap
     const s = A.st.loc;
     if (s === 'off' || !A.st.user) {
       A.st.loc = 'follow'; locBtn();
-      if (window.DeviceOrientationEvent && DeviceOrientationEvent.requestPermission) DeviceOrientationEvent.requestPermission().catch(() => { });
-      try { await A.locate({ fly: true }); } catch (e) { A.st.loc = 'off'; locBtn(); }
+      try { await A.locate({ fly: true }); loopOn(); } catch (e) { A.st.loc = 'off'; locBtn(); }
       return;
     }
     const centered = G.dist(A.center(), A.st.user) < 30;
-    if (!centered) { A.st.loc = 'follow'; M.fly(A.st.user, Math.max(A.map.getZoom(), 16)); }
-    else if (s === 'follow' && U.mobile() && isFinite(A.st.compass)) { A.st.loc = 'compass'; }
-    else { A.st.loc = 'follow'; A.map.easeTo({ bearing: 0, duration: 400 }); }
-    locBtn();
+    if (!centered || s === 'on') { A.st.loc = 'follow'; M.fly(A.st.user, Math.max(A.map.getZoom(), 15.5), { keep: true }); }
+    else if (s === 'follow') {
+      if (H.fresh(3000)) { A.st.loc = 'compass'; if (H.poor()) U.toast('Kompas kurang akurat — gerakkan HP membentuk angka 8 untuk kalibrasi', { key: 'cmp', ms: 4500 }); }
+      else { A.st.loc = 'compass'; setTimeout(() => { if (A.st.loc === 'compass' && !H.fresh(3000)) { A.st.loc = 'follow'; locBtn(); U.toast('Kompas tidak tersedia di perangkat/browser ini', { key: 'cmp' }); } }, 1500); }
+    } else { A.st.loc = 'follow'; A.map.easeTo({ bearing: 0, pitch: 0, duration: 500 }); }
+    locBtn(); loopOn();
   };
   const stopFollow = e => { if (e.originalEvent && A.st.loc !== 'off' && !N.on) { A.st.loc = 'on'; locBtn(); } };
 
@@ -247,7 +279,7 @@
       if (it.coord) return A.openPlace({ name: 'Titik koordinat', lng: it.lng, lat: it.lat });
       A.openPlace(it);
     },
-    onEnter: v => A.search(v),
+    onEnter: v => { sac.hide(); q.blur(); A.search(v); },
     onInput: () => { $('#bClear').hidden = !q.value; },
   });
   $('#sbox').onsubmit = e => { e.preventDefault(); sac.hide(); A.search(q.value.trim()); q.blur(); };
@@ -270,16 +302,21 @@
     D.pushRecent({ q: text });
     const data = { title: text, items: [], loading: true };
     PV.open('results', data, { root: true });
+    const u = A.st.user, z = A.map.getZoom(), ref = z >= 10 || !u ? A.center() : u;
+    const mine = () => PV.is('results') && PV.cur().data === data;
+    const show = res => {
+      const from = u || ref;
+      data.items = res.map(r => Object.assign(r, { dist: U.dist(G.dist(from, [r.lng, r.lat])) }));
+      if (mine()) { PV.refresh(); M.setResults(data.items, -1); }
+    };
     try {
-      const res = await Q.suggest(text, A.center(), { zoom: A.map.getZoom(), limit: 20 });
-      const u = A.st.user || A.center();
-      data.items = res.map(r => Object.assign(r, { dist: U.dist(G.dist(u, [r.lng, r.lat])) }));
-      data.loading = false;
-      if (!PV.is('results') || PV.cur().data !== data) return;
-      if (res.length === 1) return A.openPlace(res[0], { replace: true });
-      PV.refresh();
-      if (res.length) M.fit(G.bbox(res.map(r => [r.lng, r.lat])), { maxZoom: 15 });
-    } catch (e) { data.loading = false; data.err = 'Pencarian gagal. Periksa koneksi lalu coba lagi.'; PV.refresh(); }
+      const res = await Q.find(text, ref, { zoom: z, user: u, limit: 20, rings: 4, onUpdate: r => { data.more = true; show(r); } });
+      data.loading = false; data.more = false;
+      if (!mine()) return;
+      show(res);
+      if (res.length === 1 || (res.length > 1 && res[0].score >= 0.99 && !(res[1].score >= 0.99))) return A.openPlace(res[0], { replace: res.length === 1 });
+      if (res.length) M.fit(G.bbox(res.slice(0, 12).map(r => [r.lng, r.lat])), { maxZoom: 15 });
+    } catch (e) { data.loading = false; data.more = false; data.err = navigator.onLine ? 'Pencarian gagal. Periksa koneksi lalu coba lagi.' : 'Anda sedang offline — pencarian butuh sinyal.'; if (mine()) PV.refresh(); }
   };
   A.searchCat = async id => {
     const cat = Q.catOf(id); if (!cat) return;
@@ -340,8 +377,8 @@
     if (u && !place.dist) place.dist = U.dist(G.dist(u, [place.lng, place.lat]));
     const cur = PV.cur();
     PV.open('place', place, { replace: o.replace || (cur && cur.view === 'place') });
-    if (!o.nofly) M.fly([place.lng, place.lat], Math.max(A.map.getZoom(), place.spbu ? 16 : 15.5));
-    if (place.name && place.name !== 'Titik di peta' && place.name !== 'Pin dijatuhkan' && place.name !== 'Titik koordinat') D.pushRecent({ name: place.name, addr: place.addr || '', lng: place.lng, lat: place.lat, cat: place.cat || '', osm: place.osm || null });
+    if (!o.nofly) M.fly([place.lng, place.lat], Math.max(A.map.getZoom(), place.spbu ? 15.5 : 15));
+    if (place.name && place.name !== 'Titik di peta' && place.name !== 'Pin dijatuhkan' && place.name !== 'Titik koordinat') D.pushRecent({ name: place.name, addr: place.addr || '', lng: place.lng, lat: place.lat, cat: place.cat || '', osm: place.osm || null, ov: place.ov || undefined });
   };
   A.onPanelClosed = () => { chipsOn(null); M.showPin(null); M.setResults([]); };
   A.saveDialog = async p => {
@@ -390,7 +427,7 @@
     D.saved.park = { lng: +ll[0].toFixed(6), lat: +ll[1].toFixed(6), t: Date.now() }; D.saveSaved(); A.drawPark();
     U.toast('Lokasi parkir disimpan', { action: { label: 'Lihat', fn: () => A.openPlace({ name: 'Lokasi parkir', cat: 'Parkir', lng: ll[0], lat: ll[1] }) } });
   };
-  A.afterNav = () => { M.showMe(A.st.user, A.st.compass); if (A.st.user) M.setAcc(A.st.user, A.st.acc); };
+  A.afterNav = () => { if (A.st.user) { M.showMe(A.st.user, NaN); M.setAcc(A.st.user, A.st.acc); L.ll = null; loopOn(); } };
 
   // ================= map click / long-press / context menu =================
   function hitBox(pt, r = 7) { return [[pt.x - r, pt.y - r], [pt.x + r, pt.y + r]]; }
@@ -536,7 +573,7 @@
       '<button class="dr-i" data-d="set">' + ic('gear') + 'Setelan</button>' +
       '<button class="dr-i" data-d="share">' + ic('share') + 'Bagikan peta ini</button>' +
       '<button class="dr-i" data-d="help">' + ic('info') + 'Bantuan & tentang</button>' +
-      '<div class="dr-foot">Peta © OpenMapTiles © OpenStreetMap · OpenFreeMap<br>Citra satelit © Esri · Elevasi AWS Terrain Tiles<br>Rute Valhalla (FOSSGIS) · Pencarian Photon · Cuaca Open-Meteo</div>';
+      '<div class="dr-foot">Peta © OpenMapTiles © OpenStreetMap · OpenFreeMap<br>Citra satelit © Esri · Elevasi AWS Terrain Tiles<br>Rute Valhalla (FOSSGIS) · Pencarian Photon · Tempat usaha © Overture Maps · Cuaca Open-Meteo</div>';
     dr.hidden = false;
     dr.onclick = e => {
       if (e.target === dr) { dr.hidden = true; return; }
@@ -579,6 +616,9 @@
       '<h4>SPBU di rute</h4><div class="line"><span>Jarak maksimum SPBU dari jalan</span><select class="opt" data-v="radius">' + [50, 100, 150, 300, 500, 1000].map(m => '<option value="' + m + '"' + (+c.radius === m ? ' selected' : '') + '>' + U.dist(m) + '</option>').join('') + '</select></div>' +
       '<div class="line"><span>Tampilkan SPBU di rute pada peta</span>' + sw('spbuMap', c.spbuMap) + '</div>' +
       '<h4>Navigasi</h4><div class="line"><span>Panduan suara</span>' + sw('voice', c.voice) + '</div><div class="line"><span>Umumkan SPBU di depan (±1 km)</span>' + sw('voiceSpbu', c.voiceSpbu !== false) + '</div>' +
+      '<div class="line"><span>Arah panah & peta<small>Otomatis: kompas HP saat berhenti/pelan, arah jalan saat melaju. Selalu kompas: ikut arah HP terus.</small></span>' + seg('headSrc', [['auto', 'Otomatis'], ['compass', 'Selalu kompas']]) + '</div>' +
+      '<h4>Peta offline</h4><div class="line"><span>Rute yang dipilih disimpan otomatis<small id="offinfo">' + offInfo() + '</small></span></div>' +
+      '<div class="line" data-clr="off"><span>Hapus peta offline tersimpan</span>' + ic('trash') + '</div>' +
       '<h4>Data</h4><div class="line"><span>Data SPBU OpenStreetMap<small>' + (meta ? U.num(meta.n.f) + ' SPBU · ' + U.num(meta.n.r) + ' rest area · ' + U.num(meta.n.c) + ' SPKLU · diperbarui ' + esc(meta.v) + ' (otomatis tiap minggu)' : 'belum dimuat') + '</small></span></div>' +
       '<div class="line" data-clr="recent"><span>Hapus riwayat pencarian</span>' + ic('trash') + '</div><div class="line" data-clr="trips"><span>Hapus riwayat perjalanan</span>' + ic('trash') + '</div></div>';
     const res = await U.modal(focus === 'fuel' ? 'Kendaraan & harga BBM' : 'Setelan', body, [{ label: 'Batal', value: null }, { label: 'Simpan', kind: 'pri', value: 'ok' }], {
@@ -591,7 +631,9 @@
           const s = e.target.closest('[data-sw]'); if (s) { s.classList.toggle('on'); setPath(s.dataset.sw, s.classList.contains('on')); }
           const fd = e.target.closest('[data-fdel]'); if (fd) { const id = c.fuels[+fd.dataset.fdel].id; c.fuels.splice(+fd.dataset.fdel, 1); ['car', 'moto'].forEach(k => { if (c.veh[k].fuel === id) c.veh[k].fuel = 'bensin'; }); w.querySelector('#fuels').outerHTML = fuels().split('<button class="btn sm" id="addfuel">')[0]; }
           if (e.target.closest('#addfuel')) { c.fuels.push({ id: 'f' + U.uid(), n: 'BBM baru', p: 12000 }); w.querySelector('#fuels').outerHTML = fuels().split('<button class="btn sm" id="addfuel">')[0]; }
-          const cl = e.target.closest('[data-clr]'); if (cl) { if (cl.dataset.clr === 'recent') D.clearRecent(); else U.set(D.K.trips, []); U.toast('Riwayat dihapus'); }
+          const cl = e.target.closest('[data-clr]');
+          if (cl && cl.dataset.clr === 'off') { O.clear().then(() => { const i = w.querySelector('#offinfo'); if (i) i.textContent = offInfo(); U.toast('Peta offline dihapus'); }); }
+          else if (cl) { if (cl.dataset.clr === 'recent') D.clearRecent(); else U.set(D.K.trips, []); U.toast('Riwayat dihapus'); }
         });
         w.addEventListener('input', e => {
           const t = e.target;
@@ -616,13 +658,21 @@
     U.toast('Setelan disimpan');
   }
   A.settings = settings;
+  function offInfo() {
+    const l = O.list();
+    if (!O.ok) return 'Browser ini tidak mendukung penyimpanan peta offline';
+    if (!l.length) return 'Belum ada. Pilih rute: peta sepanjang rute (dan satelit bila mode Satelit) tersimpan sendiri, ' + 'navigasi tetap jalan tanpa sinyal.';
+    return l.map(x => (x.n || 'Rute') + ' · ' + U.num(x.mb || 0, 1) + ' MB' + (x.done ? '' : ' (sebagian)')).join(' · ') + ' — 3 rute terakhir disimpan, peta yang pernah dilihat juga.';
+  }
   function help() {
     U.modal('Amatu Maps', '<div class="set" style="font-size:13.5px;line-height:1.55">' +
-      '<p><b>Cari</b> tempat, alamat, koordinat (−7.43, 110.21), Plus Code, atau tempel link Google Maps. Ketuk kategori untuk tempat di sekitar.</p>' +
+      '<p><b>Cari</b> tempat, alamat, perusahaan/toko (data OpenStreetMap + Overture Maps), koordinat (−7.43, 110.21), Plus Code, atau tempel link Google Maps. Ketuk kategori untuk tempat di sekitar.</p>' +
       '<p><b>Rute</b> mobil (default), motor (otomatis tanpa tol), jalan kaki, sepeda; sampai 10 titik, rute alternatif, hindari tol/jalan raya/feri, pilih jam berangkat. Seret pin untuk mengubah titik.</p>' +
       '<p><b>SPBU di rute</b>: semua SPBU yang dilewati rute, km ke berapa, sisi kiri/kanan, jarak real-time dari posisi Anda, perkiraan tiba di SPBU, merek & jenis BBM bila tercatat. Bisa dijadikan perhentian.</p>' +
       '<p><b>Estimasi BBM</b>: perbandingan km per liter (mobil 1:10, motor 1:40 bisa diubah) × jarak, harga Bensin Rp10.000 & Solar Rp6.800 per liter bisa diubah atau ditambah, pulang-pergi, cek isi tangki.</p>' +
-      '<p><b>Navigasi</b> suara bahasa Indonesia, hitung ulang otomatis saat salah jalan, ETA menyesuaikan kecepatan Anda, pengumuman SPBU di depan, riwayat perjalanan & biaya BBM. Coba “Simulasi” tanpa bergerak.</p>' +
+      '<p><b>Navigasi</b> suara bahasa Indonesia, panah & peta berputar mengikuti kompas HP secara real time (saat melaju mengikuti arah jalan), hitung ulang otomatis saat salah jalan, ETA menyesuaikan kecepatan Anda, pengumuman SPBU di depan, riwayat perjalanan & biaya BBM.</p>' +
+      '<p><b>Offline</b>: begitu rute dipilih, peta sepanjang rute disimpan otomatis. Saat sinyal hilang, peta & panah tetap bergerak (GPS tidak butuh data). Navigasi yang terputus bisa dilanjutkan.</p>' +
+      '<p><b>Lokasi</b>: ketuk tombol lokasi sekali untuk mengikuti posisi, dua kali agar peta berputar mengikuti arah HP (mode kompas).</p>' +
       '<p><b>Lainnya</b>: mode siang/malam otomatis, satelit, medan 3D, gedung 3D, transportasi, jalur sepeda, ukur jarak & luas, simpan tempat & daftar, Rumah/Kantor, lokasi parkir, kirim tempat/rute ke HP (akun Portal AMATU), bagikan, cetak, cuaca & ketinggian.</p>' +
       '<p class="mut"><b>Keterbatasan</b>: belum ada lalu lintas langsung, ulasan/foto tempat, jadwal transportasi umum, dan foto Street View sendiri (dibuka di Google) karena datanya tidak tersedia gratis. Data peta & SPBU dari OpenStreetMap — sebagian tempat mungkin belum terpetakan.</p>' +
       '<p class="mut">Pintasan: <b>/</b> cari · <b>Esc</b> tutup · klik kanan peta untuk menu.</p></div>', [{ label: 'Tutup', kind: 'pri' }], { cls: 'wide' });
@@ -671,6 +721,27 @@
       '<h2>Langkah</h2><table>' + r.man.map(m => '<tr><td>' + esc(m.text) + '</td><td>' + (m.len ? U.dist(m.len) : '') + '</td></tr>').join('') + '</table>' +
       '<p style="color:#666;font-size:10px">Amatu Maps · ' + new Date().toLocaleString('id-ID') + ' · data © OpenStreetMap</p>';
     setTimeout(() => print(), 120);
+  };
+
+  // ================= navigation interrupted by a reload (also offline) =================
+  A.resumeCheck = async () => {
+    const k = U.get('pt.maps.navt', null);
+    if (!k || !k.t || N.on) return;
+    if (Date.now() - k.t > 12 * 36e5) { N.forget(); return; }
+    const d = await N.load();
+    if (!d || !d.r || !d.r.coords) { N.forget(); return; }
+    const b = $('#banner');
+    b.innerHTML = '<span style="color:var(--nav);display:flex">' + ic('nav') + '</span><div class="bt"><b>Lanjutkan navigasi?</b><small>Ke ' + esc(d.end || 'tujuan') + ' · terhenti ' + U.clock(d.t) + (navigator.onLine ? '' : ' · offline: rute tersimpan') + '</small></div><button class="btn sm pri" data-k="go">Lanjutkan</button><button class="ib" data-k="x">' + ic('x') + '</button>';
+    b.hidden = false;
+    b.onclick = e => {
+      const x = e.target.closest('[data-k]'); if (!x) return;
+      b.hidden = true;
+      if (x.dataset.k !== 'go') { N.forget(); return; }
+      H.ask();
+      const r = R.rebuild(d.r); r.fac = d.fac || 1;
+      DIR.restore(d.pts, d.mode || r.mode, r);
+      N.start(r, { pts: d.pts, resume: true, t0: d.t0, trav: d.trav });
+    };
   };
 
   // ================= other devices of the account =================
@@ -723,7 +794,7 @@
     if (mob !== lastMob) { lastMob = mob; if (PV.cur()) PV.render(); if (!mob) { const dt = $('#dtop'); if (dt) dt.remove(); if (PV.is('dir')) DIR.drawHead(); } else if (PV.is('dir')) DIR.drawHead(); }
     PV.layout();
   }, 150));
-  addEventListener('offline', () => U.toast('Anda sedang offline — peta yang sudah dibuka tetap tampil', { key: 'net' }));
+  addEventListener('offline', () => U.toast(N.on ? 'Sinyal hilang — navigasi lanjut dengan peta rute tersimpan' : 'Anda sedang offline — peta yang pernah dibuka & rute tersimpan tetap tampil', { key: 'net', ms: 4000 }));
   addEventListener('online', () => U.toast('Kembali online', { key: 'net', ms: 1500 }));
 
   boot();

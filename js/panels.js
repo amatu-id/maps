@@ -3,7 +3,7 @@
 (function () {
   'use strict';
   const AM = window.AM = window.AM || {};
-  const U = AM.U, G = AM.G, Q = AM.Q, R = AM.R, P = AM.P, D = AM.D, M = AM.M;
+  const U = AM.U, G = AM.G, Q = AM.Q, R = AM.R, P = AM.P, D = AM.D, M = AM.M, O = AM.O;
   const $ = U.$, esc = U.esc, ic = U.ic;
   const A = () => AM.A;
 
@@ -20,7 +20,7 @@
       PV.stack.push({ view, data, scroll: 0 });
       panel.hidden = false;
       document.body.classList.remove('pclosed');
-      PV.render();
+      PV.render(); PV.fade();
       pv.scrollTop = 0;
       if (U.mobile()) PV.snap(o.snap || V[view].snap || 'half');
       PV.layout();
@@ -33,7 +33,7 @@
       const top = PV.stack.pop();
       if (top && V[top.view].leave) V[top.view].leave(top.data);
       if (!PV.stack.length) return PV.close();
-      PV.render();
+      PV.render(); PV.fade(-1);
       pv.scrollTop = PV.cur().scroll || 0;
       if (U.mobile()) PV.snap(V[PV.cur().view].snap || 'half');
       PV.layout();
@@ -63,10 +63,11 @@
       const st = pv.scrollTop; PV.render(); pv.scrollTop = st;
     },
     is: view => { const c = PV.cur(); return !!c && c.view === view && !panel.hidden; },
+    fade(dir = 1) { if (U.reduced()) return; pv.classList.remove('fin', 'fback'); void pv.offsetWidth; pv.classList.add(dir < 0 ? 'fback' : 'fin'); },
     heights() {
       const H = innerHeight, top = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--top')) || 0;
       const dt = $('#dtop'), dtop = dt ? dt.getBoundingClientRect().bottom + 6 : top + 70;
-      return { peek: Math.min(170, H * 0.3), half: Math.round(H * 0.47), full: Math.max(260, H - dtop) };
+      return { peek: Math.min(148, H * 0.26), half: Math.round(H * 0.42), full: Math.max(260, H - dtop) };
     },
     snap(s) {
       if (!U.mobile()) return;
@@ -88,44 +89,66 @@
         panel.style.height = '';
         document.documentElement.style.setProperty('--sh-h', '0px');
         const closed = document.body.classList.contains('pclosed');
-        document.documentElement.style.setProperty('--pw', open && !closed ? '408px' : '0px');
+        document.documentElement.style.setProperty('--pw', open && !closed ? 'var(--pwid)' : '0px');
         const b = $('#bPanel'); b.hidden = !open; b.classList.toggle('out', closed);
       }
     },
   };
-  // drag the sheet by its handle / header
+  // Drag the sheet like a native bottom sheet: by its handle / header, and from the content too — upwards while the
+  // sheet isn't full yet, downwards when the content is scrolled to the top. Height follows the finger every frame
+  // and snaps with its speed (peek / half / full).
   (function sheetDrag() {
-    let y0 = 0, h0 = 0, t0 = 0, on = false, moved = false;
-    const start = e => {
-      if (!U.mobile() || panel.hidden) return;
-      const grabbable = e.target.closest('.grab, .ph, .pbar, .sumbig, .rtabs-h');
-      if (!grabbable || e.target.closest('input, select, textarea, button:not(.grabok), a')) return;
-      on = true; moved = false; y0 = e.clientY; h0 = panel.getBoundingClientRect().height; t0 = Date.now();
-      panel.classList.add('drag');
+    const HEAD = '.grab, .ph, .pbar, .sumbig, .rtabs-h, .tabs, .dhead';
+    let on = false, decided = false, take = false, head = false, x0 = 0, y0 = 0, h0 = 0, lastY = 0, lastT = 0, vel = 0, nh = 0, raf = 0, grabTap = false;
+    const apply = () => { raf = 0; panel.style.height = nh + 'px'; document.documentElement.style.setProperty('--sh-h', nh + 'px'); };
+    const begin = (x, y, target) => {
+      if (!U.mobile() || panel.hidden) return false;
+      if (target.closest('input, select, textarea, [contenteditable]')) return false;
+      on = true; decided = false; take = false; x0 = x; y0 = lastY = y; lastT = performance.now(); vel = 0;
+      h0 = panel.getBoundingClientRect().height; head = !!target.closest(HEAD); grabTap = !!target.closest('.grab');
+      return true;
     };
-    const move = e => {
+    const move = (x, y) => {
+      if (!on) return false;
+      const dy = y - y0, dx = x - x0, now = performance.now();
+      if (!decided) {
+        if (Math.abs(dy) < 7 && Math.abs(dx) < 7) return false;
+        decided = true;
+        if (Math.abs(dx) > Math.abs(dy)) { on = false; return false; }        // a sideways scroller (chips, actions)
+        const h = PV.heights(), full = h0 >= h.full - 4;
+        take = head || (dy < 0 && !full) || (dy > 0 && pv.scrollTop <= 0);
+        if (!take) { on = false; return false; }
+        panel.classList.add('drag');
+      }
+      vel = vel * 0.55 + ((y - lastY) / Math.max(1, now - lastT)) * 0.45; lastY = y; lastT = now;
+      const h = PV.heights();
+      let v = h0 - dy;
+      if (v > h.full) v = h.full + (v - h.full) * 0.25;                         // rubber band past the top
+      nh = Math.max(64, v);
+      if (!raf) raf = requestAnimationFrame(apply);
+      return true;
+    };
+    const end = () => {
       if (!on) return;
-      const dy = e.clientY - y0;
-      if (Math.abs(dy) > 4) moved = true;
-      if (!moved) return;
-      const h = PV.heights(), nh = U.clamp(h0 - dy, 90, h.full);
-      panel.style.height = nh + 'px';
-      document.documentElement.style.setProperty('--sh-h', nh + 'px');
-    };
-    const end = e => {
-      if (!on) return; on = false; panel.classList.remove('drag');
-      if (!moved) { if (e.target.closest('.grab')) PV.snap(PV.snapState === 'full' ? 'half' : 'full'); return; }
-      const h = PV.heights(), cur = panel.getBoundingClientRect().height, v = (e.clientY - y0) / Math.max(1, Date.now() - t0);
+      on = false;
+      if (!take) { if (!decided && grabTap) PV.snap(PV.snapState === 'full' ? 'half' : 'full'); return; }
+      panel.classList.remove('drag');
+      if (raf) { cancelAnimationFrame(raf); apply(); }
+      const h = PV.heights(), cur = panel.getBoundingClientRect().height;
       let pick;
-      if (v > 0.6) pick = cur > h.half ? 'half' : 'peek';
-      else if (v < -0.6) pick = cur < h.half ? 'half' : 'full';
+      if (vel > 0.45) pick = cur > h.half + 30 ? 'half' : 'peek';
+      else if (vel < -0.45) pick = cur < h.half - 30 ? 'half' : 'full';
       else pick = ['peek', 'half', 'full'].reduce((a, b) => Math.abs(h[b] - cur) < Math.abs(h[a] - cur) ? b : a);
       PV.snap(pick);
     };
-    panel.addEventListener('pointerdown', start);
-    addEventListener('pointermove', move, { passive: true });
-    addEventListener('pointerup', end);
-    addEventListener('pointercancel', end);
+    panel.addEventListener('touchstart', e => { if (e.touches.length === 1) begin(e.touches[0].clientX, e.touches[0].clientY, e.target); else on = false; }, { passive: true });
+    panel.addEventListener('touchmove', e => { if (on && e.touches.length === 1 && move(e.touches[0].clientX, e.touches[0].clientY)) e.preventDefault(); }, { passive: false });
+    panel.addEventListener('touchend', end, { passive: true });
+    panel.addEventListener('touchcancel', end, { passive: true });
+    // mouse (a narrow desktop window shows the sheet too): header / handle only
+    panel.addEventListener('pointerdown', e => { if (e.pointerType === 'mouse' && e.target.closest(HEAD) && begin(e.clientX, e.clientY, e.target)) head = true; });
+    addEventListener('pointermove', e => { if (e.pointerType === 'mouse' && on) move(e.clientX, e.clientY); }, { passive: true });
+    addEventListener('pointerup', e => { if (e.pointerType === 'mouse') end(); });
   })();
 
   // ============ autocomplete (main search box + route inputs) ============
@@ -137,7 +160,7 @@
         if (!o.box) { const r = input.getBoundingClientRect(); box.style.left = Math.max(8, r.left) + 'px'; box.style.top = (r.bottom + 4) + 'px'; box.style.width = Math.max(260, Math.min(innerWidth - 16, r.width + 40)) + 'px'; }
         return box;
       };
-      const hide = () => { if (box) { box.hidden = true; if (!o.box) { box.remove(); box = null; } } at = -1; };
+      const hide = () => { req++; if (ac) { ac.abort(); ac = null; } if (box) { box.hidden = true; if (!o.box) { box.remove(); box = null; } } at = -1; };
       const draw = () => {
         const b = ensure();
         if (!items.length) { b.hidden = true; return; }
@@ -160,27 +183,36 @@
           .map(it => ({ name: it.name, addr: it.addr, ic: 'bookmark', lng: it.lng, lat: it.lat, osm: it.osm, cat: it.cat }));
         out.push(...sv);
         const rc = D.recent().filter(r => !q || (r.name || r.q || '').toLowerCase().includes(q)).slice(0, q ? 3 : 6)
-          .map(r => r.q ? { name: r.q, ic: 'history', q: r.q } : { name: r.name, addr: r.addr, ic: 'history', lng: r.lng, lat: r.lat, osm: r.osm, cat: r.cat });
+          .map(r => r.q ? { name: r.q, ic: 'history', q: r.q } : { name: r.name, addr: r.addr, ic: 'history', lng: r.lng, lat: r.lat, osm: r.osm, cat: r.cat, ov: r.ov });
         out.push(...rc);
         return out;
       };
       const run = U.debounce(async () => {
+        if (document.activeElement !== input) return;              // a search already ran / the field was left
         const q = input.value.trim(), my = ++req;
-        items = base(); at = -1;
+        const local = base(); at = -1;
         const ref = A().center();
         const c = G.parse(q, ref);
-        if (c) items.unshift({ name: G.fmtLL(c, 6), addr: 'Koordinat', ic: 'pin', lng: c[0], lat: c[1], coord: true });
-        draw();
+        if (c) local.unshift({ name: G.fmtLL(c, 6), addr: 'Koordinat', ic: 'pin', lng: c[0], lat: c[1], coord: true });
+        items = local; draw();
         if (q.length < 2 || c) return;
         if (ac) ac.abort(); ac = new AbortController();
-        try {
-          const res = await Q.suggest(q, ref, { zoom: A().map.getZoom(), signal: ac.signal, limit: 7 });
+        const u = A().st.user;
+        const show = res => {
           if (my !== req) return;
-          const u = A().st.user || ref;
-          items = items.concat(res.map(r => Object.assign(r, { dist: U.dist(G.dist(u, [r.lng, r.lat])) })));
+          const from = u || ref, sel = at >= 0 && items[at] ? items[at] : null;
+          items = local.concat(res.filter(r => !local.some(l => l.name === r.name && Math.abs(l.lng - r.lng) < 2e-4)).map(r => Object.assign(r, { dist: U.dist(G.dist(from, [r.lng, r.lat])) })));
+          at = sel ? items.indexOf(sel) : -1;
           draw();
+        };
+        try {
+          const map = A().map, z = map.getZoom();
+          // the map view when zoomed in, otherwise where the user is
+          const main = z >= 10 || !u ? ref : u;
+          const res = await Q.find(q, main, { zoom: z, user: u, typing: true, limit: 8, rings: 3, signal: ac.signal, onUpdate: show });
+          show(res);
         } catch (e) { /* offline / aborted */ }
-      }, 220);
+      }, 200);
       input.addEventListener('input', () => { o.onInput && o.onInput(); run(); });
       input.addEventListener('focus', () => { if (o.onFocus) o.onFocus(); run(); });
       input.addEventListener('blur', () => setTimeout(hide, 160));
@@ -216,7 +248,7 @@
     snap: 'half',
     html(d) {
       let body;
-      if (d.loading) body = '<div class="loading"><span class="spin"></span>Mencari ' + esc(d.title) + '…</div>';
+      if (d.loading && !(d.items && d.items.length)) body = '<div class="loading"><span class="spin"></span>Mencari ' + esc(d.title) + '…</div>';
       else if (d.err) body = '<div class="empty">' + esc(d.err) + '</div>';
       else if (!d.items.length) body = '<div class="empty">Tidak ada hasil untuk “' + esc(d.title) + '” di area ini.<br><small>Coba geser/perkecil peta lalu cari lagi.</small></div>';
       else body = d.items.map((r, i) => {
@@ -225,7 +257,7 @@
           (r.addr ? '<span>' + esc(r.addr) + '</span>' : '') + (st ? '<span class="' + (st.open ? 'ok' : 'bad') + '">' + esc(st.text) + '</span>' : '') +
           (r.spbu ? '<span>' + P.tags(r.spbu).map(t => '<span class="badge">' + esc(t) + '</span>').join(' ') + '</span>' : '') + '</div>' +
           '<div class="rr"><button class="ib" data-a="dir" data-i="' + i + '" title="Rute ke sini">' + ic('dir') + '</button></div></div>';
-      }).join('');
+      }).join('') + (d.loading ? '<div class="loading sm"><span class="spin"></span>Mencari tempat usaha di sekitar…</div>' : '');
       return '<div class="pbar"><button class="ib" data-a="back" aria-label="Kembali">' + ic('back') + '</button><div class="tt">' + esc(d.title) + (d.items && d.items.length ? ' <small class="mut">· ' + d.items.length + '</small>' : '') + '</div>' +
         (d.cat ? '<button class="btn sm" data-a="again">' + ic('search') + 'Cari di area ini</button>' : '') + '<button class="ib" data-a="close" aria-label="Tutup">' + ic('x') + '</button></div>' + body;
     },
@@ -262,6 +294,13 @@
         rows.push('<div class="row">' + ic('fuel') + '<div class="rt"><b>' + esc(b.n) + '</b>' + (sp.no ? ' · No. ' + esc(sp.no) : '') + (tags.length ? '<small>' + esc(tags.join(' · ')) + '</small>' : '<small>Jenis BBM belum tercatat di OpenStreetMap</small>') + '</div></div>');
         if (sp.oh) rows.push(ohRow(sp.oh));
       }
+      if (p.ov) {
+        const o = p.ov, link = (u, icn, label, sub) => '<a class="row click" target="_blank" rel="noopener" href="' + esc(u) + '">' + ic(icn) + '<div class="rt">' + esc(label) + (sub ? '<small>' + esc(sub) + '</small>' : '') + '</div></a>';
+        if (o.phone) rows.push('<a class="row click" href="tel:' + esc(o.phone.replace(/[^\d+]/g, '')) + '">' + ic('phone') + '<div class="rt">' + esc(o.phone.replace(/^\+62/, '0')) + '<small>Telepon</small></div></a>');
+        if (o.web) rows.push(link(/^https?:/.test(o.web) ? o.web : 'https://' + o.web, 'web', o.web.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''), 'Situs web'));
+        if (o.fb) rows.push(link(o.fb, 'share', 'Facebook', 'Halaman tempat ini'));
+        if (o.ig) rows.push(link(o.ig, 'share', 'Instagram', ''));
+      }
       rows.push('<div data-r="extra"></div>');
       const pc = G.olc(p.lat, p.lng);
       rows.push('<div class="row click" data-a="copy" data-v="' + esc(G.olcShort(pc) + (p.city ? ' ' + p.city : '')) + '">' + ic('info') + '<div class="rt">' + esc(G.olcShort(pc)) + '<small>Plus Code · ketuk untuk salin</small></div></div>');
@@ -269,6 +308,7 @@
       rows.push('<div class="row" data-r="wx">' + ic('sun') + '<div class="rt mut">Cuaca & ketinggian…</div></div>');
       rows.push('<a class="row click" target="_blank" rel="noopener" href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=' + p.lat.toFixed(6) + ',' + p.lng.toFixed(6) + '">' + ic('street') + '<div class="rt">Street View<small>Buka foto jalan di Google Maps (tab baru)</small></div></a>');
       if (p.osm && p.osm.id) rows.push('<a class="row click" target="_blank" rel="noopener" href="https://www.openstreetmap.org/' + ({ N: 'node', W: 'way', R: 'relation' }[String(p.osm.t)[0].toUpperCase()] || 'node') + '/' + p.osm.id + '">' + ic('edit') + '<div class="rt">Lihat / perbaiki di OpenStreetMap</div></a>');
+      else if (p.ov) rows.push('<div class="row">' + ic('info') + '<div class="rt mut">Data tempat usaha: Overture Maps<small>Sumber Meta, Microsoft & lainnya (CDLA-Permissive-2.0)</small></div></div>');
       return '<div class="pbar"><button class="ib" data-a="back" aria-label="Kembali">' + ic('back') + '</button><div class="tt"></div><button class="ib" data-a="close" aria-label="Tutup">' + ic('x') + '</button></div>' +
         '<div class="ph"><h2>' + esc(p.name || 'Titik di peta') + '</h2><div class="cat">' + esc(p.cat || '') + (p.dist ? ' · ' + esc(p.dist) : '') + '</div><div class="sub" data-r="status"></div></div>' +
         '<div class="acts"><button class="act pri" data-a="dir"><i>' + ic('dir') + '</i>Rute</button><button class="act" data-a="start"><i>' + ic('nav') + '</i>Mulai</button>' +
@@ -285,7 +325,7 @@
         if (a === 'close') return PV.close();
         if (a === 'copy') return U.copy(b.dataset.v);
         if (a === 'dir') return DIR.open({ to: p });
-        if (a === 'start') return DIR.open({ to: p, start: true });
+        if (a === 'start') { AM.H.ask(); return DIR.open({ to: p, start: true }); }
         if (a === 'save') return A().saveDialog(p);
         if (a === 'nearby') return A().nearbyPrompt([p.lng, p.lat]);
         if (a === 'send') { D.send({ type: 'place', p: { name: p.name, addr: p.addr, lng: p.lng, lat: p.lat, cat: p.cat, osm: p.osm || null } }); return U.toast('Terkirim. Buka Amatu Maps di HP/perangkat lain untuk melihatnya.'); }
@@ -410,6 +450,7 @@
       }
       DIR.showSpbu();
       PV.refresh('body');
+      if (r) DIR.offSave();
     },
     select(i) {
       if (i === DIR.ri || !DIR.routes[i]) return;
@@ -435,7 +476,7 @@
           try { rt.spbu = await DIR.spbuFallback(rt, radius); rt.spbuR = radius; rt.spbuSrc = 'osm'; } catch (x) { rt.spbu = []; rt.spbuErr = true; }
         }
         rt.spbuBusy = false;
-        if (rt === DIR.route()) { DIR.showSpbu(); PV.refresh('body'); }
+        if (rt === DIR.route()) { DIR.showSpbu(); PV.refresh('body'); if (AM.N.on && AM.N.route === rt) AM.N.ui(); }
         else PV.refresh('cards');
       }
     },
@@ -614,6 +655,27 @@
         if (b && ff) b.textContent = U.liter(ff.liters) + ' · ' + U.rp(ff.cost);
       });
     },
+    // saved-for-offline state of the chosen route (saved by itself a moment after it is chosen)
+    offHtml() {
+      const r = DIR.route(); if (!r || !O || !O.ok) return '';
+      const st = O.state && O.state.id === r.id ? O.state : null, e = O.list().find(x => x.id === r.id);
+      if (st && st.busy) return '<div class="offl"><span class="spin sm"></span><span>Menyimpan peta rute untuk offline… <b>' + Math.round(st.done / Math.max(1, st.n) * 100) + '%</b></span></div>';
+      if ((st && st.ok) || (e && e.done)) return '<div class="offl ok">' + ic('check') + '<span>Peta rute tersimpan offline' + (e && e.mb ? ' · ' + U.num(e.mb, 1) + ' MB' : '') + ' — tetap jalan tanpa sinyal</span></div>';
+      if (st && !st.busy) return '<div class="offl bad">' + ic('warn') + '<span>Sebagian peta rute belum tersimpan (' + (navigator.onLine ? 'sinyal lemah' : 'offline') + '). Dicoba lagi saat navigasi.</span></div>';
+      return '<div class="offl">' + ic('down') + '<span>Peta rute akan disimpan untuk offline…</span></div>';
+    },
+    offSave: U.debounce(() => {
+      const r = DIR.route();
+      if (r && !AM.N.on && PV.is('dir')) O.saveRoute(r, { sat: M.st.base === 'sat', name: (DIR.pts[DIR.pts.length - 1] || {}).name || '' });
+    }, 1200),
+    // back into a navigation that a reload interrupted: the saved route, no new routing request
+    restore(pts, mode, r) {
+      Object.assign(DIR, { mode, pts, routes: [r], ri: 0, err: '', tab: 'ring', along: null, alongList: [], other: {}, loading: false, autoStart: false });
+      DIR.key = JSON.stringify([pts.map(p => [p.lng.toFixed(5), p.lat.toFixed(5)]), mode, D.cfg.avoid]);
+      PV.open('dir', {}, { root: true, snap: 'peek' });
+      DIR.draw(false);
+      if (!r.spbu) DIR.loadSpbu();
+    },
     nextHtml() {
       const r = DIR.route(); if (!r) return '';
       if (!r.spbu) return r.spbuBusy !== false ? '<div class="nextsp"><span class="spin"></span><div class="nx"><b>Mencari SPBU di sepanjang rute…</b></div></div>' : '';
@@ -683,12 +745,12 @@
       let tab = '';
       if (DIR.tab === 'ring') {
         tab = '<div class="sumbig"><div class="dur">' + U.dur(t) + '<small>(' + U.dist(r.dist) + ')</small></div><div class="eta">Tiba sekitar ' + U.clock(+dep + t * 1000) + (DIR.depart ? ' · berangkat ' + U.clock(DIR.depart) : '') + (r.via ? ' · melalui ' + esc(r.via) : '') + '</div></div>' +
-          '<div data-next>' + DIR.nextHtml() + '</div>' + DIR.fuelHtml(r) + DIR.alongHtml() +
+          '<div data-off>' + DIR.offHtml() + '</div><div data-next>' + DIR.nextHtml() + '</div>' + DIR.fuelHtml(r) + DIR.alongHtml() +
           (r.fac && Math.abs(r.fac - 1) > 0.04 ? '<div class="note">' + ic('clock') + '<span>Estimasi waktu ×' + U.num(r.fac, 2) + ' (perkiraan kepadatan ' + (D.cfg.traffic === 'auto' ? 'menurut jam' : D.cfg.traffic) + '). Tanpa data lalu lintas langsung; waktu saat navigasi menyesuaikan kecepatan Anda.</span></div>' : '');
       } else if (DIR.tab === 'spbu') tab = '<div data-next>' + DIR.nextHtml() + '</div><div data-spbu>' + DIR.spbuHtml() + '</div>';
       else tab = DIR.stepsHtml();
       return DIR.cardsHtml() + '<div class="tabs rtabs-h">' + tabs.map(([k, n, i]) => '<button class="tab' + (DIR.tab === k ? ' on' : '') + '" data-t="' + k + '">' + ic(i) + esc(n) + '</button>').join('') + '</div>' + tab +
-        '<div class="go"><button class="btn pri" data-a="nav">' + ic('nav') + 'Mulai</button><button class="btn" data-a="sim" title="Simulasikan perjalanan">' + ic('sim') + 'Simulasi</button><button class="ib" data-a="more" title="Lainnya" style="border:1px solid var(--line)">' + ic('more') + '</button></div>';
+        '<div class="go"><button class="btn pri" data-a="nav">' + ic('nav') + 'Mulai</button><button class="ib" data-a="more" title="Lainnya" style="border:1px solid var(--line)">' + ic('more') + '</button></div>';
     },
   };
   V.dir = {
@@ -711,8 +773,7 @@
         if (b) {
           const a = b.dataset.a;
           if (a === 'retry') return DIR.compute(true);
-          if (a === 'nav') return AM.N.start(r);
-          if (a === 'sim') return AM.N.start(r, { sim: true });
+          if (a === 'nav') { AM.H.ask(); return AM.N.start(r); }
           if (a === 'more') return DIR.more(b);
           if (a === 'spadd' || a === 'aladd') {
             e.stopPropagation();
@@ -740,12 +801,14 @@
       const body = el.querySelector('[data-body]'); if (!body) return;
       if (part === 'spbu') { const s = el.querySelector('[data-spbu]'); if (s) { const y = el.scrollTop; s.innerHTML = DIR.spbuHtml(); el.scrollTop = y; } const n = el.querySelector('[data-next]'); if (n) n.innerHTML = DIR.nextHtml(); return; }
       if (part === 'next') { const n = el.querySelector('[data-next]'); if (n) n.innerHTML = DIR.nextHtml(); return; }
+      if (part === 'off') { const n = el.querySelector('[data-off]'); if (n) n.innerHTML = DIR.offHtml(); return; }
       if (part === 'cards') { const c = el.querySelector('.routes'); if (c) { const t = document.createElement('div'); t.innerHTML = DIR.cardsHtml(); c.replaceWith(t.firstChild); } return; }
       const y = el.scrollTop; body.innerHTML = DIR.bodyHtml(); el.scrollTop = y; DIR.fuelUpdate(el);
       DIR.drawModes();
     },
     leave() { DIR.close(); },
   };
+  if (O) O.on(() => { if (PV.is('dir') && DIR.tab === 'ring') PV.refresh('off'); });
   DIR.fuelInput = (e, el, commit) => {
     const k = e.target.dataset && e.target.dataset.k; if (!k) return;
     const r = DIR.route(); if (!r) return;
@@ -891,7 +954,7 @@
         (l.length ? Object.entries(months).map(([m, ts]) => {
           const km = ts.reduce((a, t) => a + (t.dist || 0), 0) / 1000, cost = ts.reduce((a, t) => a + (t.cost || 0), 0), lit = ts.reduce((a, t) => a + (t.liters || 0), 0);
           return '<div class="sec">' + esc(m) + '<span class="grow"></span><small>' + U.num(km, 1) + ' km · ' + U.liter(lit) + ' · ' + U.rp(cost) + '</small></div>' +
-            ts.map(t => '<div class="res" data-id="' + t.id + '"><div class="rd"><b>' + esc(t.to || 'Perjalanan') + '</b><span>dari ' + esc(t.from || '–') + '</span><span>' + U.day(t.t) + ' ' + U.clock(t.t) + ' · ' + esc(R.MODES[t.mode] ? R.MODES[t.mode].n : '') + ' · ' + U.dist(t.dist) + ' · ' + U.dur(t.time) + (t.liters ? ' · ' + U.liter(t.liters) + ' · ' + U.rp(t.cost) : '') + (t.sim ? ' · simulasi' : '') + '</span></div>' +
+            ts.map(t => '<div class="res" data-id="' + t.id + '"><div class="rd"><b>' + esc(t.to || 'Perjalanan') + '</b><span>dari ' + esc(t.from || '–') + '</span><span>' + U.day(t.t) + ' ' + U.clock(t.t) + ' · ' + esc(R.MODES[t.mode] ? R.MODES[t.mode].n : '') + ' · ' + U.dist(t.dist) + ' · ' + U.dur(t.time) + (t.liters ? ' · ' + U.liter(t.liters) + ' · ' + U.rp(t.cost) : '') + '</span></div>' +
               '<div class="rr"><button class="ib" data-a="del" data-id="' + t.id + '" style="color:var(--mut)">' + ic('trash') + '</button></div></div>').join('');
         }).join('') : '<div class="empty">Belum ada perjalanan. Riwayat tersimpan otomatis setiap navigasi selesai.</div>');
     },

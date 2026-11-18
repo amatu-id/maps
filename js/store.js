@@ -14,7 +14,7 @@
     v: 1, theme: 'auto', mode: 'car', avoid: { toll: false, highway: false, ferry: false },
     veh: { car: { n: 'Mobil', kmpl: 10, fuel: 'bensin', tank: 40 }, moto: { n: 'Motor', kmpl: 40, fuel: 'bensin', tank: 4 } },
     fuels: DEF_FUELS.map(f => Object.assign({}, f)),
-    pp: false, voice: true, traffic: 'auto', radius: 150, spbuMap: true, savedMap: true, labels: true,
+    pp: false, voice: true, traffic: 'auto', radius: 150, spbuMap: true, savedMap: true, labels: true, headSrc: 'auto',
   });
   function merge(a, b) {
     for (const k in b) {
@@ -68,8 +68,8 @@
     },
     clearRecent() { U.set(K.recent, []); },
     // ---------- trips ----------
-    trips() { return U.get(K.trips, []); },
-    pushTrip(t) { const l = D.trips(); l.unshift(t); U.set(K.trips, l.slice(0, 300)); },
+    trips() { return (U.get(K.trips, []) || []).filter(t => !t.sim); },     // (old simulated drives are not real trips)
+    pushTrip(t) { const l = U.get(K.trips, []) || []; l.unshift(t); U.set(K.trips, l.slice(0, 300)); },
     delTrip(id) { U.set(K.trips, D.trips().filter(t => t.id !== id)); },
     // ---------- send route/place to the other devices of this account ----------
     send(payload) { U.set(K.kirim, Object.assign({ t: Date.now(), from: navigator.userAgent.slice(0, 60), dev: D.dev() }, payload)); },

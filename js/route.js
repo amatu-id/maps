@@ -201,6 +201,11 @@
       if (!d.routes || !d.routes.length) { const er = new Error('Rute tidak ditemukan'); er.user = true; throw er; }
       return d.routes.map(r => parseOsrm(r, mode));
     },
+    // a route saved as JSON (navigation resume) → a working route object again
+    rebuild(x) {
+      const coords = x.coords, cum = G.cum(coords), tcum = Float64Array.from(x.tcum);
+      return Object.assign({}, x, { coords, cum, tcum, dist: cum[cum.length - 1], time: tcum[tcum.length - 1], bbox: G.bbox(coords), legs: x.legs || [], man: x.man || [] });
+    },
     // seconds from the start to distance s along the route
     timeAt(r, s) {
       const i = G.idx(r.cum, s);

@@ -189,9 +189,38 @@
     return order.map(d => [DID[d], p.always ? '24 jam' : p.week[d] == null ? '–' : !p.week[d].length ? 'Tutup' : p.week[d].map(([a, b]) => a === 0 && b === 1440 ? '24 jam' : fmt(a) + '–' + fmt(b)).join(', ')]);
   }
 
+  // Indonesia (rough box): results of other countries only when they really match the words typed
+  const inID = ll => ll[0] > 94.5 && ll[0] < 141.5 && ll[1] > -11.5 && ll[1] < 6.5;
+  // Photon (OpenStreetMap) and Overture places in one list: text match first, then distance; duplicates merged
+  function merge(osm, ov, q, refs, o) {
+    const OV = AM.OV, qt = OV.qTokens(q), qn = qt.join(' '), qfull = OV.normName(q), typing = !!o.typing, home = inID(refs[0]);
+    const out = [];
+    const near = ll => Math.min(...refs.map(r => G.dist(r, ll)));
+    for (const r of osm) {
+      const ll = [r.lng, r.lat], d = near(ll);
+      let s = OV.score(OV.normName(r.name), qt, typing);
+      if (r.addr) s = Math.max(s, OV.score(OV.normName(r.name + ' ' + r.addr), qt, typing) * 0.9);
+      const area = /^(city|state|country|district|county|locality)$/.test(r.type || '') || r.key === 'place' || r.key === 'boundary';
+      if (home && r.cc && r.cc !== 'ID' && s < 0.85) continue;            // Kuba / Portugal noise for an Indonesian query
+      if (d > 300000 && s < 0.6 && !area) continue;
+      if (s < 0.3 && !area && d > 30000) continue;
+      const nn = OV.normName(r.name), exact = nn === qn || nn === qfull;
+      out.push(Object.assign(r, { d, score: s, rank: s * 100 + (exact ? 12 : 0) + (nn === qfull ? 10 : 0) + (area && s > 0.9 ? 6 : 0) + 4 - Math.log2(1 + d / 400) * 4 }));
+    }
+    for (const r of ov) {
+      const dup = out.find(x => x.src !== 'ov' && G.dist([x.lng, x.lat], [r.lng, r.lat]) < 150 && (OV.normName(x.name) === OV.normName(r.name) || OV.score(OV.normName(x.name), OV.qTokens(r.name), false) > 0.8));
+      if (dup) { if (!dup.ov) { dup.ov = r.ov; if (!dup.addr) dup.addr = r.addr; } continue; }
+      const nn = OV.normName(r.name), exact = nn === qn || nn.replace(/^(pt|cv|ud) /, '') === qn;
+      out.push(Object.assign(r, { rank: r.score * 100 + (exact ? 12 : 0) + (nn === qfull ? 10 : 0) + (r.conf || 0) * 8 - Math.log2(1 + r.d / 400) * 4 }));
+    }
+    out.sort((a, b) => b.rank - a.rank);
+    return out.slice(0, o.limit || 10);
+  }
+
   const Q = AM.Q = {
     CATS, catOf, catLabel, iconOf, parseOH, ohStatus, ohTable,
     setTiles(tpl) { tileTpl = tpl; },
+    tileTpl: () => tileTpl,
     norm(f) {
       const p = f.properties || {}, c = f.geometry.coordinates;
       const st = p.street ? p.street + (p.housenumber ? ' No. ' + p.housenumber : '') : '';
@@ -201,8 +230,25 @@
       return {
         id: (p.osm_type || '') + (p.osm_id || ''), name, cat: catLabel(p.osm_key, p.osm_value, p.type), ic: iconOf(p.osm_key, p.osm_value),
         key: p.osm_key, val: p.osm_value, addr: parts.join(', '), lng: c[0], lat: c[1], ext: p.extent || null,
-        osm: p.osm_type ? { t: p.osm_type, id: p.osm_id } : null, type: p.type, pc: p.postcode || ''
+        osm: p.osm_type ? { t: p.osm_type, id: p.osm_id } : null, type: p.type, pc: p.postcode || '', cc: (p.countrycode || '').toUpperCase()
       };
+    },
+    // everything for a typed name: OpenStreetMap (Photon) + Overture business listings near the map / the user.
+    // o: {zoom, user, typing, limit, rings, signal, onUpdate(list)} → final list
+    async find(q, ref, o = {}) {
+      const refs = [ref];
+      if (o.user && G.dist(o.user, ref) > 3000) refs.push(o.user);
+      let osm = [], ov = [], err = null;
+      const upd = () => { if (o.onUpdate && !(o.signal && o.signal.aborted)) o.onUpdate(merge(osm.slice(), ov.slice(), q, refs, o)); };
+      const a = Q.suggest(q, ref, { zoom: o.zoom, limit: o.typing ? 8 : 16, signal: o.signal, timeout: o.timeout })
+        .then(r => { osm = r; upd(); }).catch(e => { err = e; });
+      const b = AM.OV ? AM.OV.search(q, refs, { rings: o.rings, typing: o.typing, signal: o.signal, onUpdate: r => { ov = r; upd(); } })
+        .then(r => { ov = r; }).catch(() => { }) : Promise.resolve();
+      await Promise.all([a, b]);
+      if (o.signal && o.signal.aborted) throw err || new DOMException('aborted', 'AbortError');
+      const res = merge(osm, ov, q, refs, o);
+      if (!res.length && err) throw err;
+      return res;
     },
     async suggest(q, near, o = {}) {
       const u = new URL(PHOTON + '/api/');

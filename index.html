@@ -5,11 +5,11 @@
 <script src="/amatu.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Amatu Maps — Peta, Rute, SPBU di Rute & Estimasi BBM</title>
-<meta name="description" content="Peta gaya Google Maps: cari tempat, rute mobil/motor/jalan kaki/sepeda, navigasi suara, estimasi waktu tiba, SPBU yang dilewati rute dengan jarak real-time, estimasi BBM & biaya, mode siang/malam.">
+<meta name="description" content="Peta gaya Google Maps: cari tempat & perusahaan, rute mobil/motor/jalan kaki/sepeda, navigasi suara dengan kompas real time, peta rute offline otomatis, SPBU yang dilewati rute dengan jarak real-time, estimasi BBM & biaya, mode siang/malam.">
 <meta name="theme-color" content="#ffffff">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%2334a853'/%3E%3Cstop offset='1' stop-color='%231e7e34'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='15' fill='url(%23g)'/%3E%3Cpath d='M8 46 26 30l10 9 20-17' stroke='%23fff' stroke-width='5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M44 10a9 9 0 0 1 9 9c0 7-9 15-9 15s-9-8-9-15a9 9 0 0 1 9-9z' fill='%23ea4335'/%3E%3Ccircle cx='44' cy='19' r='3.4' fill='%23fff'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="vendor/maplibre-gl.css?v=9e108b83bc69">
-<link rel="stylesheet" href="app.css?v=9e108b83bc69">
+<link rel="stylesheet" href="vendor/maplibre-gl.css?v=f7e14c0aa9c9">
+<link rel="stylesheet" href="app.css?v=f7e14c0aa9c9">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -87,7 +87,6 @@
   <symbol id="i-print" viewBox="0 0 24 24"><path d="M7 9V3.5h10V9M7 17.5H4.5v-6a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v6H17M7 14.5h10v6H7z"/></symbol>
   <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3.5 21.5 20h-19z"/><path d="M12 10v4.5M12 17.2h.01"/></symbol>
   <symbol id="i-toll" viewBox="0 0 24 24"><rect x="3" y="9" width="5" height="11" rx="1"/><path d="M8 12h13M5.5 9V5M3 20h18"/><circle cx="16" cy="6" r="2.5"/></symbol>
-  <symbol id="i-sim" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l5.5-3.5z" fill="currentColor"/></symbol>
   <symbol id="i-drag" viewBox="0 0 24 24"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke-width="3"/></symbol>
   <symbol id="i-street" viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.2"/><path d="M9.5 21v-6H8V10.5A2.5 2.5 0 0 1 10.5 8h3A2.5 2.5 0 0 1 16 10.5V15h-1.5v6z"/><path d="M5 18c-1.5.6-2.5 1.3-2.5 2 0 1.4 4.3 2.5 9.5 2.5s9.5-1.1 9.5-2.5c0-.7-1-1.4-2.5-2"/></symbol>
   <!-- manoeuvres -->
@@ -147,7 +146,7 @@
   </div>
   <button id="navSpbu" hidden></button>
   <div id="navSpeed" hidden><b>0</b><small>km/j</small></div>
-  <div id="navSim" hidden></div>
+  <div id="navOff" hidden></div>
   <button id="nRecenter" class="card" hidden><svg class="ic"><use href="#i-nav"/></svg>Pusatkan ulang</button>
   <div id="navBot" class="card">
     <button id="nExit" class="ib" aria-label="Keluar navigasi"><svg class="ic"><use href="#i-x"/></svg></button>
@@ -164,18 +163,21 @@
 <div id="banner" hidden></div>
 <div id="print" aria-hidden="true"></div>
 
-<script src="vendor/maplibre-gl.js?v=9e108b83bc69"></script>
-<script src="js/util.js?v=9e108b83bc69"></script>
-<script src="js/geo.js?v=9e108b83bc69"></script>
-<script src="js/mvt.js?v=9e108b83bc69"></script>
-<script src="js/style.js?v=9e108b83bc69"></script>
-<script src="js/search.js?v=9e108b83bc69"></script>
-<script src="js/route.js?v=9e108b83bc69"></script>
-<script src="js/poi.js?v=9e108b83bc69"></script>
-<script src="js/store.js?v=9e108b83bc69"></script>
-<script src="js/mapui.js?v=9e108b83bc69"></script>
-<script src="js/panels.js?v=9e108b83bc69"></script>
-<script src="js/nav.js?v=9e108b83bc69"></script>
-<script src="js/app.js?v=9e108b83bc69"></script>
+<script src="vendor/maplibre-gl.js?v=f7e14c0aa9c9"></script>
+<script src="js/util.js?v=f7e14c0aa9c9"></script>
+<script src="js/geo.js?v=f7e14c0aa9c9"></script>
+<script src="js/heading.js?v=f7e14c0aa9c9"></script>
+<script src="js/mvt.js?v=f7e14c0aa9c9"></script>
+<script src="js/style.js?v=f7e14c0aa9c9"></script>
+<script src="js/search.js?v=f7e14c0aa9c9"></script>
+<script src="js/ovt.js?v=f7e14c0aa9c9"></script>
+<script src="js/offline.js?v=f7e14c0aa9c9"></script>
+<script src="js/route.js?v=f7e14c0aa9c9"></script>
+<script src="js/poi.js?v=f7e14c0aa9c9"></script>
+<script src="js/store.js?v=f7e14c0aa9c9"></script>
+<script src="js/mapui.js?v=f7e14c0aa9c9"></script>
+<script src="js/panels.js?v=f7e14c0aa9c9"></script>
+<script src="js/nav.js?v=f7e14c0aa9c9"></script>
+<script src="js/app.js?v=f7e14c0aa9c9"></script>
 </body>
 </html>
